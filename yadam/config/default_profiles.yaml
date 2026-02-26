@@ -1,0 +1,36 @@
+# yadam/config/default_profiles.yaml
+era_profiles:
+  joseon_yadam:
+    prefix: |
+      배경: 조선시대. 의복과 소품은 조선시대 양식. 가상의 인물.
+    safety: |
+      안전 지침: 노출 없음, 선정성 없음, 과도한 폭력/유혈/시신의 직접 묘사 없음. 긴장감은 조명과 분위기로 표현.
+
+  modern_senior_story:
+    prefix: |
+      배경: 현대 한국. 시니어 사연. 가상의 인물.
+    safety: |
+      안전 지침: 노출 없음, 선정성 없음. 상해/의료적 장면은 직접 묘사 대신 분위기와 표정으로 표현. 자극적 표현 금지.
+
+style_profiles:
+  k_webtoon:
+    suffix: |
+      화풍: 한국 웹툰 스타일, 선명한 선과 색, 시네마틱 조명, 16:9, 텍스트 없음.
+      만화 패널/컷 분할/말풍선/대사/자막/캡션/간판 글씨 없음.
+
+  k_webtoon_char:
+    suffix: |
+      화풍: 한국 웹툰 스타일, 선명한 선과 색, 시네마틱 조명, 텍스트 없음.
+      만화 패널/컷 분할/말풍선/대사/자막/캡션/간판 글씨 없음.
+
+  k_webtoon_clip:
+    suffix: |
+      화풍: 16:9, Digital illustration, webtoon style, vibrant colors, clean lines, korean historical manhwa style.
+
+  photoreal_cinematic:
+    suffix: |
+      화풍: 현실 사진풍, 영화적 라이팅, 자연스러운 피부 질감, 16:9, 텍스트 없음.
+
+  warm_illustration:
+    suffix: |
+      화풍: 따뜻한 감성 일러스트, 부드러운 질감, 과장 없는 표정, 16:9, 텍스트 없음.

@@ -1,0 +1,285 @@
+변경 이력 (Change Log)
+
+본 문서는 docs/requirements.md(요구사항)과 구현/운영 규격의 변경 사항을 누적 기록한다.
+각 항목은 “무엇이/왜/어떻게 바뀌었는지”를 최소 단위로 남긴다.
+
+⸻
+
+작성 규칙
+	•	날짜는 KST 기준 YYYY-MM-DD
+	•	한 변경은 1개 항목으로 기록
+	•	가능하면 영향 범위를 명시한다(모듈/디렉토리/스키마/CLI 등)
+	•	구현이 동반되면 관련 커밋/브랜치를 함께 적는다(선택)
+
+⸻
+
+템플릿
+
+[YYYY-MM-DD] 변경 제목
+	•	구분: (요구사항/설계/구현/운영)
+	•	변경 내용:
+	•	(무엇이 바뀌었는지)
+	•	변경 이유:
+	•	(왜 바꿨는지)
+	•	영향 범위:
+	•	(예: CLI, JSON 스키마, 디렉토리 구조, 이미지 생성, 리라이트 룰 등)
+	•	마이그레이션/호환:
+	•	(기존 데이터/폴더/파일을 어떻게 처리할지)
+	•	비고:
+	•	(추가 메모)
+
+⸻
+
+변경 이력
+
+[2026-02-23] story_id 기반 입력/출력 디렉토리 규칙 확정
+	•	구분: 요구사항/설계
+	•	변경 내용:
+	•	입력은 story_id(예: story00)로 받고, 대본은 stories/{story_id}.txt에서 읽는다.
+	•	결과물은 work/{story_id}/ 아래에 스토리별로 정리한다.
+	•	stories/와 work/ 디렉토리는 없으면 자동 생성한다.
+	•	변경 이유:
+	•	재실행/재시도/비교(스토리 단위 관리) 및 운영 편의성 향상.
+	•	영향 범위:
+	•	CLI 인자(--story-id), 경로 계산, 출력 폴더 구조
+	•	마이그레이션/호환:
+	•	기존 방식 사용 시, 새 규칙으로 래핑하거나 CLI 옵션 유지 필요(선택).
+	•	비고:
+	•	--create-empty-story 옵션으로 입력 파일이 없을 때 빈 파일 생성 가능.
+
+[2026-02-23] 이미지 생성 실패 시 error 파일 및 JSON 상태 유지 규칙 확정
+	•	구분: 요구사항/설계
+	•	변경 내용:
+	•	장면 이미지 생성 실패 시 clips/006_error.jpg 같은 파일을 남기고 파이프라인은 중단하지 않는다.
+	•	재시도 성공 시 _error 파일은 삭제하고 성공 파일로 대치한다.
+	•	JSON에는 status/attempts/last_error/path/prompt_history 등을 기록한다.
+	•	변경 이유:
+	•	API 오류/정책 차단이 있어도 전체 산출물을 확보하고, 재개(Resume) 가능하게 하기 위함.
+	•	영향 범위:
+	•	이미지 생성 모듈, JSON 스키마, 재시도/재개 로직
+	•	마이그레이션/호환:
+	•	기존 산출물에 상태 필드가 없다면 최초 실행 시 기본값으로 보강 필요.
+	•	비고:
+	•	tmp 저장 후 rename(원자적 교체) 사용 권장.
+
+[2026-02-23] 정책 차단 시 프롬프트 자동 리라이트 후 재시도 규칙 확정
+	•	구분: 요구사항/설계
+	•	변경 내용:
+	•	정책(안전 필터) 차단으로 판단되면 프롬프트를 레벨(1~3)로 완화하여 재시도한다.
+	•	실패 확정 시 _error 유지 + JSON에 policy_rewrite_level 및 이력 기록.
+	•	변경 이유:
+	•	동일 장면이 반복 차단되는 것을 자동으로 완화해 처리하기 위함.
+	•	영향 범위:
+	•	에러 분류 로직, 프롬프트 리라이터, 재시도 정책
+	•	마이그레이션/호환:
+	•	기존 prompt 기록이 없다면 prompt_history는 빈 배열로 시작.
+
+[2026-02-23] 시대/화풍 프로필(era/style) 분리 설계 확정
+	•	구분: 요구사항/설계
+	•	변경 내용:
+	•	조선 야담/현대 시니어 사연 등 시대 프리셋(era)과 화풍 프리셋(style)을 분리한다.
+	•	JSON에 era_profile, style_profile을 기록하고, 프롬프트는 “콘텐츠 레이어 + 스타일 레이어”로 합성한다.
+	•	변경 이유:
+	•	동일 대본/장면에 대해 화풍만 바꿔 재생성 가능한 구조 확보.
+	•	영향 범위:
+	•	설정 파일(default_profiles.yaml), 프롬프트 빌더, JSON project 메타
+	•	마이그레이션/호환:
+	•	프로젝트에 era/style이 없다면 기본값을 설정한다.
+
+[2026-02-24] LLM 기반 인물/장소 정규화 및 장면 태깅 도입
+	•	구분: 설계/구현
+	•	변경 내용:
+	•	규칙 기반 후보(seed) + LLM 정규화를 결합하여 characters/places/scene_tags를 생성.
+	•	LLM이 visual_anchors를 생성하고, 캐릭터/장소 프롬프트에 우선 반영.
+	•	변경 이유:
+	•	호칭/별칭/대명사 처리 및 캐릭터/장소 일관성 향상.
+	•	영향 범위:
+	•	yadam/nlp/llm_extract.py, orchestrator.py, builder.py, project.json 스키마
+
+[2026-02-24] 이미지 생성 프롬프트 디버깅 정보(project.json) 강화
+	•	구분: 구현/운영
+	•	변경 내용:
+	•	이미지 생성 메타에 prompt_original, prompt_used, prompt_history 기록.
+	•	변경 이유:
+	•	정책 차단/품질 문제 원인 추적 목적.
+	•	영향 범위:
+	•	yadam/gen/image_tasks.py, project.json 스키마
+
+[2026-02-24] clip 텍스트 억제 강화 및 clip 전용 스타일 도입
+	•	구분: 설계/구현
+	•	변경 내용:
+	•	clip 프롬프트에 말풍선/자막/캡션/패널/내레이션 박스/텍스트 박스 금지 문구 강화.
+	•	style_profiles.k_webtoon_clip을 clip 전용으로 사용 가능.
+	•	변경 이유:
+	•	웹툰 스타일에서 문자 포함 확률이 높아 clip 품질/편집성 저하.
+	•	영향 범위:
+	•	builder.py, default_profiles.yaml, orchestrator.py
+
+[2026-02-24] Vertex 모드와 Developer(API Key) 모드 혼용 문제 정리
+	•	구분: 운영/구현
+	•	변경 내용:
+	•	키/환경변수 혼용 시 라우팅 혼선 가능 → 분리 운용 권장.
+	•	Developer 모드에서 일부 이미지 생성 파라미터 미지원 확인 → 모드별 분기 필요.
+	•	변경 이유:
+	•	실행 시 라우팅 혼선 및 기능 차이로 인한 실패 방지.
+	•	영향 범위:
+	•	환경 구성, 이미지 생성 클라이언트 설정, 운영 절차
+
+[2026-02-24] LLM 호출에서 system role 미지원 이슈 대응
+	•	구분: 구현
+	•	변경 내용:
+	•	system role 미지원 오류 발생 → system 지침을 user 메시지에 병합하는 방식으로 변경.
+	•	변경 이유:
+	•	모델/엔드포인트에 따라 system role이 거부될 수 있어 안정성 확보 목적.
+	•	영향 범위:
+	•	yadam/nlp/llm_extract.py
+
+⸻
+
+(신규 추가) 2026-02-26 변경분
+
+[2026-02-26] 캐릭터 생성에서 16:9 문구 제거를 위한 캐릭터 전용 스타일 분리
+	•	구분: 설계/구현
+	•	변경 내용:
+	•	캐릭터 이미지 생성(3:4)에서 기본 스타일(k_webtoon) suffix의 16:9 지시가 섞이는 문제를 해결하기 위해,
+	•	캐릭터 전용 스타일 프로필(예: k_webtoon_char)을 도입하고, 캐릭터 생성은 이를 사용하도록 변경.
+	•	변경 이유:
+	•	캐릭터는 3:4인데 프롬프트에 16:9가 들어가 결과 품질/지시 일관성이 깨지는 문제 방지.
+	•	영향 범위:
+	•	default_profiles.yaml(style_profiles), orchestrator.py(캐릭터 프롬프트 생성)
+	•	마이그레이션/호환:
+	•	기존 프로젝트 재생성 시 캐릭터 프롬프트가 변경되므로, 필요하면 캐릭터 이미지를 재생성(삭제 후 생성)한다.
+
+[2026-02-26] LLM 호출 지연 구간에 heartbeat 출력 추가
+	•	구분: 구현/운영
+	•	변경 내용:
+	•	LLM 호출이 긴 구간(예: entity extract)에서 진행상황이 보이도록 . 출력(주기 1초) 및 60초마다 줄바꿈 로그 출력.
+	•	변경 이유:
+	•	“[2/7] LLM extract: start” 이후 멈춘 것처럼 보이는 문제 해결.
+	•	영향 범위:
+	•	orchestrator.py(heartbeat wrapper)
+
+[2026-02-26] 아동 연령 기준을 5세로 고정
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	“아동”은 기본적으로 “약 5세”를 프롬프트/LLM 입력에 반영한다.
+	•	단, 기존 age_hint가 있으면 이를 우선한다.
+	•	변경 이유:
+	•	이미지 생성 시 아동의 연령대가 흔들려 캐릭터 일관성이 깨지는 문제 방지.
+	•	영향 범위:
+	•	캐릭터 프롬프트 빌드, clip LLM scene prompt 입력 데이터 구성
+
+[2026-02-26] 폴더 자동 열기 동작 비활성화
+	•	구분: 운영/구현
+	•	변경 내용:
+	•	실행 과정에서 Finder로 work/characters 등 폴더가 연속으로 열리는 동작을 전면 비활성화(코멘트 처리).
+	•	변경 이유:
+	•	작업 흐름 방해(창 다중 오픈) 문제 해결.
+	•	영향 범위:
+	•	orchestrator.py(폴더 오픈 호출부)
+
+[2026-02-26] CLI --clean-workdir 삭제 절차 및 --non-interactive 결합 규칙 확정
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	--clean-workdir는 work/{story_id}만 삭제 대상으로 제한(경로 탈출 방지).
+	•	삭제 확인은 반드시 y 또는 n만 허용(엔터 무효).
+	•	--non-interactive와 함께 쓰면 --clean-workdir 확인을 먼저 받고, 그 이후 비대화형으로 진행.
+	•	변경 이유:
+	•	“삭제 여부 확인이 중복되거나”, “비대화형인데 삭제 확인이 생략되는” 혼선 방지.
+	•	영향 범위:
+	•	yadam/cli.py(옵션 처리, 확인 로직)
+
+[2026-02-26] clips 진행 로그에 누적 경과시간(elapsed) 표기 추가
+	•	구분: 구현/운영
+	•	변경 내용:
+	•	[6/7] clips 진행 로그에 elapsed~{time} 필드를 추가해, 현재까지 누적 경과 시간을 ETA와 함께 출력.
+	•	변경 이유:
+	•	ETA가 “남은 시간”만 보여주어 실제로 얼마나 진행됐는지 즉시 파악하기 어려운 문제 개선.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py(clips 진행 로그 출력부)
+	•	마이그레이션/호환:
+	•	없음(로그 출력 형식만 변경).
+
+[2026-02-26] clip LLM 프롬프트에 시대 배경 지시(era prefix) 직접 전달
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	clip 장면 프롬프트 생성 시 era_profile 이름만 전달하던 방식에서, era prefix(예: “배경: 조선시대. 의복과 소품은 조선시대 양식...”)를 함께 전달하도록 변경.
+	•	LLM 규칙에 “시대지시가 제공되면 반드시 반영” 조건을 추가.
+	•	변경 이유:
+	•	“조선시대 배경” 같은 시대 맥락이 프롬프트에 약하게 반영되는 문제를 방지하고 시대 고증 일관성을 높이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py(입력 스키마/규칙), yadam/pipeline/orchestrator.py(호출 파라미터)
+	•	마이그레이션/호환:
+	•	없음(기존 데이터 스키마 변경 없음).
+
+[2026-02-26] 이미지 생성 백엔드 선택 구조 도입(Vertex Imagen / Gemini Flash Image)
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	CLI에 --image-api 옵션을 추가해 vertex_imagen 또는 gemini_flash_image를 선택 가능하게 변경.
+	•	CLI에 --image-model 옵션을 추가해 API별 기본 모델 대신 사용자 지정 모델을 주입할 수 있게 변경.
+	•	Gemini Flash Image용 ImageClient 구현(GeminiFlashImageClient) 추가.
+	•	변경 이유:
+	•	속도/품질 비교 테스트를 위해 이미지 생성 API를 실행 시점에 전환할 수 있어야 하기 때문.
+	•	영향 범위:
+	•	yadam/cli.py, yadam/gen/gemini_client.py, 운영 실행 커맨드
+	•	마이그레이션/호환:
+	•	기본값은 기존과 동일하게 vertex_imagen + imagen-4.0-generate-001을 사용하므로 기존 실행과 호환.
+
+[2026-02-26] clip LLM 입력에 wealth_level 전달
+	•	구분: 구현
+	•	변경 내용:
+	•	clip 장면 프롬프트 생성용 인물 입력(char_objs)에 wealth_level 필드를 추가.
+	•	변경 이유:
+	•	복식/분위기 디테일에서 재산 수준 신호를 활용해 장면 일관성을 높이기 위함.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py(_build_llm_scene_prompt)
+
+[2026-02-26] Gemini Developer API 호환을 위한 scene prompt schema 수정
+	•	구분: 구현
+	•	변경 내용:
+	•	scene prompt structured output의 summary 타입을 Dict[str,str]에서 명시 필드 모델(shot/focus/time/place)로 변경.
+	•	변경 이유:
+	•	Gemini API에서 additionalProperties 미지원 오류(LLM_SCENE_PROMPT_ERROR) 방지.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py
+	•	마이그레이션/호환:
+	•	없음(응답 의미 동일, 스키마 표현만 변경).
+
+[2026-02-26] 아동 variant 일관성 강화(앵커 필터 + 5세 정규화)
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	variant/age_stage가 아동일 때 age_hint를 “약 5세”로 정규화.
+	•	아동 장면에서 visual_anchors/wardrobe_anchors의 청년·성인 단서를 필터링.
+	•	캐릭터 생성과 clip LLM 입력/continuity lock에 동일 규칙 적용.
+	•	변경 이유:
+	•	“아동 연화” 장면에서 성인 단서가 섞여 외형/복식이 흔들리는 문제 해결.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py(캐릭터 프롬프트 생성, clip 프롬프트 생성)
+
+[2026-02-26] .vrew 직접 생성 요구사항/기획 확정
+	•	구분: 요구사항/기획
+	•	변경 내용:
+	•	모든 clip 생성 완료 후 project.json과 clips 이미지를 소스로 .vrew 파일을 직접 생성하도록 목표를 확정.
+	•	scene별 텍스트는 project.json의 scene.text를 그대로 사용.
+	•	scene별 voice는 Vrew 내에서 나중에 교체할 dummy voice를 지정.
+	•	scene duration은 .vrew 생성 시 자동 확정하지 않고, Vrew 편집 단계에서 수동 조정.
+	•	변경 이유:
+	•	후속 편집 워크플로우를 Vrew 중심으로 단순화하고, 스크립트-이미지 매핑을 자동화하기 위함.
+	•	영향 범위:
+	•	요구사항 문서, export 단계 설계(.vrew builder 신규 구현 예정)
+	•	마이그레이션/호환:
+	•	초기 단계는 설계 확정이며, 구현 이후 .vrew 생성 옵션/동작이 추가될 예정.
+
+[2026-02-26] .vrew 직접 생성 구현(Zip + project.json + media 이미지)
+	•	구분: 구현
+	•	변경 내용:
+	•	VrewFileExporter를 추가해 project.json/scenes/clips 기준으로 .vrew 파일을 직접 생성.
+	•	zip 내부에 media/*.jpeg와 project.json을 기록하고, Vrew 워터마크 리소스를 포함.
+	•	scene.text를 자막으로 그대로 반영하고, speaker는 dummy voice("tts_speaker") 메타로 기록.
+	•	clip 이미지 상태(status=ok) 및 파일 존재 검증 실패 시 export 에러 처리.
+	•	변경 이유:
+	•	최종 편집 워크플로우를 Vrew 중심으로 단순화하고, 장면-이미지-텍스트 자동 매핑을 제공하기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py, yadam/cli.py(기본 exporter 변경)
+	•	마이그레이션/호환:
+	•	기존 vrew_payload.json 출력도 유지(디버깅/호환용).

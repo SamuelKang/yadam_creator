@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yadam-pipeline"
+version = "0.1.0"
+description = "Yadam script -> scenes -> character/place -> image -> payload pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0",
+  "pillow>=10.0",
+]
+
+[tool.setuptools]
+packages = ["yadam"]

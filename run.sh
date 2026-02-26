@@ -1,0 +1,1 @@
+python -m yadam.cli --story-id story00 --era modern_senior_story --style photoreal_cinematic
