@@ -135,6 +135,43 @@ class Orchestrator:
             or "rai" in s
         )
 
+    def _is_rate_limit_error(self, err: Any) -> bool:
+        s = str(err or "").lower()
+        return (
+            "resource_exhausted" in s
+            or "429" in s
+            or "rate limit" in s
+            or "quota" in s
+        )
+
+    def _call_with_rate_limit_retry(
+        self,
+        fn: Callable[[], T],
+        *,
+        label: str,
+        max_attempts: int = 4,
+        base_delay_s: float = 1.5,
+        max_delay_s: float = 20.0,
+    ) -> T:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except Exception as e:
+                last_error = e
+                if (not self._is_rate_limit_error(e)) or attempt >= max_attempts:
+                    raise
+                delay = min(max_delay_s, base_delay_s * (2 ** (attempt - 1)))
+                print(
+                    f"  - {label}: rate limited(429), retry in {delay:.1f}s "
+                    f"(attempt {attempt}/{max_attempts})"
+                )
+                time.sleep(delay)
+        # logical fallback (for type checker)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"{label}: unknown retry failure")
+
     def _load_existing_project(self) -> Dict[str, Any]:
         path = self.paths.out_dir / self.cfg.json_name
         if not path.exists():
@@ -1144,19 +1181,22 @@ class Orchestrator:
                 t_hint = _time_hint(scene_text)
                 focus = _focus_hint(scene_text)
 
-                llm_res = self.scene_prompt_llm.build(
-                    era_profile=self.cfg.era_profile,
-                    era_prefix=self.era.prefix,
-                    style_profile="k_webtoon_clip",
-                    scene_id=sid,
-                    scene_text=scene_text,
-                    place_name=place_name,
-                    place_anchors=place_anchors,
-                    characters=char_objs,
-                    shot_hint=shot,
-                    focus_hint=focus,
-                    time_hint=t_hint,
-                    prev_summaries=prev_ctx[-2:],
+                llm_res = self._call_with_rate_limit_retry(
+                    lambda: self.scene_prompt_llm.build(
+                        era_profile=self.cfg.era_profile,
+                        era_prefix=self.era.prefix,
+                        style_profile="k_webtoon_clip",
+                        scene_id=sid,
+                        scene_text=scene_text,
+                        place_name=place_name,
+                        place_anchors=place_anchors,
+                        characters=char_objs,
+                        shot_hint=shot,
+                        focus_hint=focus,
+                        time_hint=t_hint,
+                        prev_summaries=prev_ctx[-2:],
+                    ),
+                    label=f"[6/7] clip {sid:03d} scene prompt",
                 )
 
                 prompt = str(llm_res.get("prompt") or "").strip()

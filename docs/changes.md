@@ -405,3 +405,16 @@
 	•	현재 로컬 SDXL 계열에서 조선시대 사극 웹툰 스타일 일관성이 충분히 확보되지 않아 운영 리스크가 높기 때문.
 	•	영향 범위:
 	•	docs/requirements.md(운영 권장 항목)
+
+[2026-02-27] clips 단계 LLM scene prompt 429(RESOURCE_EXHAUSTED) 재시도 추가
+	•	구분: 구현/운영
+	•	변경 내용:
+	•	`[6/7] clips`의 scene prompt 생성 호출에 rate-limit 전용 재시도 래퍼를 도입.
+	•	`429`, `RESOURCE_EXHAUSTED`, `rate limit`, `quota` 계열 오류만 지수 백오프로 재시도(최대 4회).
+	•	재시도 대기 로그(`retry in ...s`)를 출력해 진행 상태를 확인 가능하게 변경.
+	•	변경 이유:
+	•	Vertex 혼잡 시간대에 prompt 단계가 연속 즉시 실패하여 `_error.jpg`가 대량 생성되는 문제를 완화하기 위함.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py
+	•	마이그레이션/호환:
+	•	기존 산출물 스키마 변경 없음. 재실행 시부터 재시도 동작이 적용됨.
