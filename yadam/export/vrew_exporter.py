@@ -38,7 +38,7 @@ class VrewFileExporter(VrewExporter):
     """
     project.json + clips 이미지를 기반으로 .vrew(Zip) 파일을 직접 생성한다.
     - scene.text를 자막 원문으로 사용
-    - TTS 음성은 더미 speaker("tts_speaker") 기준 메타만 기록(실제 mp3는 포함하지 않음)
+    - TTS 음성은 더미 speaker("unknown") 기준 메타만 기록(실제 mp3는 포함하지 않음)
     """
 
     WATERMARK_MEDIA_ID = "vrewmark_white_01"
@@ -60,7 +60,7 @@ class VrewFileExporter(VrewExporter):
         speaker_id = "10"
         speaker = {
             "speakerId": speaker_id,
-            "name": "tts_speaker",
+            "name": "unknown",
             "provider": "vrew",
             "age": "youth",
             "gender": "female",

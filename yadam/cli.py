@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -37,6 +38,8 @@ EXAMPLES_TEXT = "\n".join([
     "",
     "추가 예시:",
     "  python -m yadam.cli --story-id story00 --image-api gemini_flash_image",
+    "  python -m yadam.cli --story-id story00 --image-api comfyui --comfy-workflow ~/comfy/flux_api.json",
+    "  python -m yadam.cli --story-id story00 --image-api comfyui --image-model sd_xl_base_1.0.safetensors",
     "  python -m yadam.cli --story-id story00 --vrew-clip-max-chars 40",
 ])
 
@@ -67,7 +70,7 @@ def main() -> None:
     ap.add_argument("--style", default="k_webtoon")
     ap.add_argument(
         "--image-api",
-        choices=["vertex_imagen", "gemini_flash_image"],
+        choices=["vertex_imagen", "gemini_flash_image", "comfyui"],
         default="vertex_imagen",
         help="이미지 생성 API 선택 (기본: vertex_imagen)",
     )
@@ -96,6 +99,22 @@ def main() -> None:
         type=int,
         default=30,
         help=".vrew clip 자막 분할 최대 글자 수 (기본: 30)",
+    )
+    ap.add_argument(
+        "--comfy-url",
+        default="http://127.0.0.1:8188",
+        help="ComfyUI 서버 URL (기본: http://127.0.0.1:8188)",
+    )
+    ap.add_argument(
+        "--comfy-workflow",
+        default="",
+        help="ComfyUI API workflow JSON 경로(미지정 시 프로젝트 기본 템플릿 사용, placeholder 지원)",
+    )
+    ap.add_argument(
+        "--comfy-timeout-sec",
+        type=int,
+        default=300,
+        help="ComfyUI 이미지 생성 결과 대기 timeout 초(기본: 300)",
     )
     args = ap.parse_args()
 
@@ -157,6 +176,7 @@ def main() -> None:
     from yadam.pipeline.orchestrator import Orchestrator, PipelineConfig
     from yadam.export.vrew_exporter import VrewFileExporter
     from yadam.gen.gemini_client import VertexImagenClient, GeminiFlashImageClient
+    from yadam.gen.comfy_client import ComfyUIImageClient
 
     cfg = PipelineConfig(
         base_dir=str(base_dir),
@@ -172,11 +192,36 @@ def main() -> None:
     if args.image_api == "vertex_imagen":
         model = args.image_model.strip() or "imagen-4.0-generate-001"
         img_client = VertexImagenClient(model=model)
-    else:
+    elif args.image_api == "gemini_flash_image":
         model = args.image_model.strip() or "gemini-2.5-flash-image"
         img_client = GeminiFlashImageClient(model=model)
+    else:
+        model = args.image_model.strip() or "sd_xl_base_1.0.safetensors"
+        default_comfy_workflow = (
+            root / "yadam" / "config" / "comfy_workflows" / "yadam_api_sdxl_base_fast_placeholders.json"
+        )
+        workflow_path = (
+            args.comfy_workflow.strip()
+            or os.getenv("COMFYUI_WORKFLOW_PATH", "").strip()
+            or str(default_comfy_workflow)
+        )
+        if not workflow_path:
+            raise ValueError(
+                "comfyui 사용 시 workflow가 필요합니다. "
+                "--comfy-workflow <path> 또는 COMFYUI_WORKFLOW_PATH 환경변수를 설정하세요."
+            )
+        if not Path(workflow_path).expanduser().exists():
+            raise FileNotFoundError(f"comfy workflow 파일을 찾을 수 없습니다: {workflow_path}")
+        img_client = ComfyUIImageClient(
+            base_url=args.comfy_url.strip(),
+            workflow_path=workflow_path,
+            model=model,
+            timeout_sec=max(10, int(args.comfy_timeout_sec)),
+        )
 
     print(f"[INFO] image_api={args.image_api}, image_model={model}")
+    if args.image_api == "comfyui":
+        print(f"[INFO] comfy_url={args.comfy_url.strip()}, comfy_workflow={workflow_path}")
     exporter = VrewFileExporter()
 
     orch = Orchestrator(cfg, img_client=img_client, exporter=exporter)

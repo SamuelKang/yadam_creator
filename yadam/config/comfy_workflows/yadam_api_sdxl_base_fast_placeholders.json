@@ -1,0 +1,86 @@
+{
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "__MODEL__"
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": "__WIDTH__",
+      "height": "__HEIGHT__",
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Korean Joseon dynasty historical drama scene, Korean hanbok silhouette and details, Korean traditional architecture (hanok, ondol, wooden beams), Korean historical webtoon illustration, clean black ink lineart, flat cel shading, restrained palette, cinematic composition, single clear subject focus, no modern elements. __PROMPT__",
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "__NEGATIVE_PROMPT__, japanese style, anime style, manga panel, ukiyo-e, kimono, obi, samurai armor, torii gate, japanese shrine, geisha hair ornaments, chinese hanfu, qipao, xianxia, wuxia, photorealistic photo, glossy skin, modern fashion, modern interior, collage, crowd of many people, duplicate face, extra limbs, deformed hands, blurry face, text, letters, watermark, logo, subtitle, speech bubble",
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "__SEED__",
+      "steps": 18,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "YADAM",
+      "images": [
+        "9",
+        0
+      ]
+    }
+  }
+}

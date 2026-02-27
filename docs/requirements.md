@@ -170,11 +170,20 @@ LLM 호출 진행상황 표시(heartbeat)
 
 8.4 이미지 API 선택
 	•	CLI에서 이미지 생성 백엔드를 선택할 수 있어야 한다.
-	•	--image-api vertex_imagen | gemini_flash_image
+	•	--image-api vertex_imagen | gemini_flash_image | comfyui
 	•	--image-model 로 모델명을 오버라이드할 수 있어야 한다.
 	•	기본값:
 	•	vertex_imagen -> imagen-4.0-generate-001
 	•	gemini_flash_image -> gemini-2.5-flash-image
+	•	comfyui -> sd_xl_base_1.0.safetensors
+	•	comfyui 사용 시:
+	•	--comfy-url 로 서버 주소를 지정할 수 있어야 한다(기본 http://127.0.0.1:8188).
+	•	--comfy-workflow 또는 COMFYUI_WORKFLOW_PATH 로 API workflow JSON 경로를 지정할 수 있다.
+	•	둘 다 미지정이면 프로젝트 기본 템플릿(yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json)을 사용한다.
+	•	workflow JSON은 __PROMPT__/__NEGATIVE_PROMPT__/__WIDTH__/__HEIGHT__/__SEED__/__MODEL__ placeholder 치환을 지원해야 한다.
+	•	운영 권장:
+	•	실전 품질 일관성 기준의 기본 경로는 vertex_imagen으로 둔다.
+	•	comfyui는 속도/비용/로컬 실행 실험용 보조 경로로 운용한다.
 
 8.5 .vrew clip 자막 분할 옵션
 	•	CLI에서 .vrew clip 분할 글자 수를 지정할 수 있어야 한다.

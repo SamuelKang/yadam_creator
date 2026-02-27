@@ -275,7 +275,7 @@
 	•	변경 내용:
 	•	VrewFileExporter를 추가해 project.json/scenes/clips 기준으로 .vrew 파일을 직접 생성.
 	•	zip 내부에 media/*.jpeg와 project.json을 기록하고, Vrew 워터마크 리소스를 포함.
-	•	scene.text를 자막으로 그대로 반영하고, speaker는 dummy voice("tts_speaker") 메타로 기록.
+	•	scene.text를 자막으로 그대로 반영하고, speaker는 dummy voice("unknown") 메타로 기록.
 	•	clip 이미지 상태(status=ok) 및 파일 존재 검증 실패 시 export 에러 처리.
 	•	변경 이유:
 	•	최종 편집 워크플로우를 Vrew 중심으로 단순화하고, 장면-이미지-텍스트 자동 매핑을 제공하기 위함.
@@ -316,3 +316,68 @@
 	•	초기 실행 시 사용자 가이드를 즉시 제공하고, 테스트 환경에서 help 확인 가능성을 높이기 위함.
 	•	영향 범위:
 	•	yadam/cli.py(FriendlyArgumentParser, 지연 import)
+
+[2026-02-27] ComfyUI 이미지 생성 백엔드 추가
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	이미지 API 선택지에 `comfyui`를 추가하고, 로컬 ComfyUI 서버를 통해 이미지를 생성할 수 있도록 `ComfyUIImageClient`를 구현.
+	•	CLI 옵션 `--comfy-url`, `--comfy-workflow`, `--comfy-timeout-sec`를 추가.
+	•	`--comfy-workflow` 미지정 시 `COMFYUI_WORKFLOW_PATH` 환경변수를 fallback으로 사용.
+	•	workflow JSON placeholder 치환(`__PROMPT__`, `__NEGATIVE_PROMPT__`, `__WIDTH__`, `__HEIGHT__`, `__SEED__`, `__MODEL__`) 지원.
+	•	변경 이유:
+	•	Vertex/Gemini 외에 로컬 생성 경로(라이선스/비용 대응)를 운영 단계에서 선택 가능하게 하기 위함.
+	•	영향 범위:
+	•	yadam/gen/comfy_client.py, yadam/cli.py, docs/requirements.md
+	•	비고:
+	•	프로젝트 내 예시 API 워크플로우 템플릿 파일 `yadam/config/comfy_workflows/yadam_api_sdxl_placeholders.json` 추가.
+
+[2026-02-27] comfyui 선택 시 프로젝트 기본 워크플로우 자동 사용
+	•	구분: 운영/구현
+	•	변경 내용:
+	•	`--image-api comfyui`에서 `--comfy-workflow`와 `COMFYUI_WORKFLOW_PATH`가 모두 비어 있으면,
+	•	프로젝트 기본 템플릿 `yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json`을 자동으로 사용.
+	•	최종 선택된 workflow 파일이 없으면 명시적 `FileNotFoundError`로 종료.
+	•	변경 이유:
+	•	초기 실행 시 workflow 경로 입력 부담을 줄이고 바로 테스트 가능하게 하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py, docs/requirements.md
+
+[2026-02-27] 야담용 ComfyUI 경량(base-only) 기본 워크플로우 추가
+	•	구분: 설계/구현
+	•	변경 내용:
+	•	refiner를 제외한 SDXL base-only API 워크플로우 템플릿 `yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json`을 추가.
+	•	`--image-api comfyui` 기본 workflow를 위 템플릿으로 변경.
+	•	comfyui 기본 모델을 `sd_xl_base_1.0.safetensors`로 조정.
+	•	변경 이유:
+	•	M1 16GB 환경에서 메모리/스왑 부담을 줄여 안정적인 장면 생성 속도를 확보하기 위함.
+	•	영향 범위:
+	•	yadam/config/comfy_workflows/, yadam/cli.py, docs/requirements.md
+
+[2026-02-27] ComfyUI 기본 워크플로우에 한국 사극 화풍 고정 앵커 강화
+	•	구분: 구현/튜닝
+	•	변경 내용:
+	•	`yadam_api_sdxl_base_fast_placeholders.json`의 positive prompt prefix를 한국 조선시대/한복/한옥/웹툰 스타일 중심으로 강화.
+	•	negative prompt에 일본풍/중국풍 단서(`japanese`, `kimono`, `samurai`, `hanfu`, `qipao` 등)를 명시적으로 추가.
+	•	변경 이유:
+	•	실생성 결과가 일본풍/혼합풍으로 치우치는 현상을 줄이고, 야담 목적(조선시대 사극 웹툰) 방향으로 수렴시키기 위함.
+	•	영향 범위:
+	•	yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json
+
+[2026-02-27] .vrew 더미 voice 이름을 unknown으로 변경
+	•	구분: 구현
+	•	변경 내용:
+	•	.vrew 생성 시 speaker 메타의 이름을 `tts_speaker`에서 `unknown`으로 변경.
+	•	변경 이유:
+	•	Vrew 후편집 단계에서 실제 음성을 수동 매핑하기 위한 더미 표기를 단순화하기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+
+[2026-02-27] 운영 기준 확정: 실전 기본은 Vertex, ComfyUI는 보조 실험 경로
+	•	구분: 운영
+	•	변경 내용:
+	•	실전 품질 일관성이 중요한 기본 경로를 `vertex_imagen`으로 유지.
+	•	`comfyui`는 로컬 비용/속도 실험 및 보조 생성 경로로 위치를 명확화.
+	•	변경 이유:
+	•	현재 로컬 SDXL 계열에서 조선시대 사극 웹툰 스타일 일관성이 충분히 확보되지 않아 운영 리스크가 높기 때문.
+	•	영향 범위:
+	•	docs/requirements.md(운영 권장 항목)
