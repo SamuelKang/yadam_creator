@@ -53,6 +53,7 @@ class PipelineConfig:
     scene_min_s: int = 2
     scene_max_s: int = 4
     scene_base_len: int = 40  # 기본 40
+    vrew_clip_max_chars: int = 30
 
 
 def _safe_filename(s: str) -> str:
@@ -1439,7 +1440,11 @@ class Orchestrator:
             # export도 “할 때만” confirm(기존과 동일)
             if self._confirm("export를 진행할까요?", f"- out: {self.paths.out_dir}"):
                 print("[7/7] export: start")
-                req = VrewExportRequest(project=project, out_dir=str(self.paths.out_dir))
+                req = VrewExportRequest(
+                    project=project,
+                    out_dir=str(self.paths.out_dir),
+                    clip_text_max_chars=max(1, int(self.cfg.vrew_clip_max_chars)),
+                )
                 self.exporter.export(req)
                 print("[7/7] export: done")
 

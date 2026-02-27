@@ -176,6 +176,11 @@ LLM 호출 진행상황 표시(heartbeat)
 	•	vertex_imagen -> imagen-4.0-generate-001
 	•	gemini_flash_image -> gemini-2.5-flash-image
 
+8.5 .vrew clip 자막 분할 옵션
+	•	CLI에서 .vrew clip 분할 글자 수를 지정할 수 있어야 한다.
+	•	--vrew-clip-max-chars <int> (기본 30)
+	•	장면(scene.text)은 의미 단락(문장 경계 우선) 기준으로 분할하되, 분할 단위가 길면 글자 수 기준으로 추가 분할한다.
+
 ⸻
 
 9. 운영 편의/출력 정책
@@ -210,6 +215,7 @@ ETA 표기
 매핑 규칙
 	•	scene 순서는 project.json의 scene id 오름차순을 따른다.
 	•	scene별 자막 텍스트는 project.json의 scene.text를 그대로 사용한다.
+	•	scene.text는 .vrew clip으로 분할될 수 있으며(기본 30자), 분할된 하위 clip들은 모두 동일 scene 이미지를 공유한다.
 	•	scene별 이미지는 clips/{id:03d}.jpg를 사용한다.
 	•	scene별 voice는 Vrew 내부에서 추후 교체 가능한 dummy voice로 지정한다.
 	•	scene duration은 자동 확정하지 않고, .vrew 생성 이후 Vrew 편집 과정에서 수동 조정한다.

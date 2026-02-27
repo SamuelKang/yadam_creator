@@ -15,6 +15,7 @@ import json
 class VrewExportRequest:
     project: Dict[str, Any]
     out_dir: str
+    clip_text_max_chars: int = 30
 
 
 class VrewExporter(ABC):
@@ -50,6 +51,7 @@ class VrewFileExporter(VrewExporter):
 
     def export(self, req: VrewExportRequest) -> None:
         scenes = self._collect_scenes(req.project)
+        clip_text_max_chars = max(1, int(req.clip_text_max_chars))
         input_script = str(req.project.get("project", {}).get("input_script_path") or "").strip()
         story_name = Path(input_script).stem if input_script else "story"
 
@@ -84,6 +86,7 @@ class VrewFileExporter(VrewExporter):
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
             text = str(scene.get("text") or "").strip()
+            text_chunks = self._split_for_clips(text, clip_text_max_chars)
             image_path = Path(str((scene.get("image") or {}).get("path") or "")).resolve()
 
             image_media_id = str(uuid4())
@@ -123,58 +126,59 @@ class VrewFileExporter(VrewExporter):
                 },
             }
 
-            audio_media_id = str(uuid4())
-            audio_name = self._audio_name_from_text(text, sid)
-            words, duration = self._build_words(text, audio_media_id)
-            files.append({
-                "version": 1,
-                "mediaId": audio_media_id,
-                "sourceOrigin": "VREW_RESOURCE",
-                "fileSize": max(1, int(duration * 16000)),
-                "name": f"media/{audio_name}.mp3",
-                "type": "AVMedia",
-                "videoAudioMetaInfo": {
+            for chunk_idx, chunk_text in enumerate(text_chunks, start=1):
+                audio_media_id = str(uuid4())
+                audio_name = self._audio_name_from_text(chunk_text, sid, chunk_idx)
+                words, duration = self._build_words(chunk_text, audio_media_id)
+                files.append({
+                    "version": 1,
+                    "mediaId": audio_media_id,
+                    "sourceOrigin": "VREW_RESOURCE",
+                    "fileSize": max(1, int(duration * 16000)),
+                    "name": f"media/{audio_name}.mp3",
+                    "type": "AVMedia",
+                    "videoAudioMetaInfo": {
+                        "duration": duration,
+                        "audioInfo": {"sampleRate": 24000, "codec": "mp3"},
+                    },
+                    "sourceFileType": "TTS",
+                    "fileLocation": "IN_MEMORY",
+                })
+                tts_clip_infos[audio_media_id] = {
+                    "text": {
+                        "raw": chunk_text,
+                        "processed": chunk_text,
+                        "textAspectLang": "ko",
+                    },
+                    "speaker": {
+                        "age": speaker["age"],
+                        "gender": speaker["gender"],
+                        "lang": speaker["lang"],
+                        "name": speaker["name"],
+                        "speakerId": speaker["speakerId"],
+                        "provider": speaker["provider"],
+                        "versions": ["v1"],
+                    },
                     "duration": duration,
-                    "audioInfo": {"sampleRate": 24000, "codec": "mp3"},
-                },
-                "sourceFileType": "TTS",
-                "fileLocation": "IN_MEMORY",
-            })
-            tts_clip_infos[audio_media_id] = {
-                "text": {
-                    "raw": text,
-                    "processed": text,
-                    "textAspectLang": "ko",
-                },
-                "speaker": {
-                    "age": speaker["age"],
-                    "gender": speaker["gender"],
-                    "lang": speaker["lang"],
-                    "name": speaker["name"],
-                    "speakerId": speaker["speakerId"],
-                    "provider": speaker["provider"],
-                    "versions": ["v1"],
-                },
-                "duration": duration,
-                "volume": 1,
-                "speed": 0,
-                "pitch": 0,
-                "version": "v1",
-            }
+                    "volume": 1,
+                    "speed": 0,
+                    "pitch": 0,
+                    "version": "v1",
+                }
 
-            clips.append({
-                "words": words,
-                "captionMode": "MANUAL",
-                "captions": [
-                    {"text": [{"insert": text + "\n"}]},
-                    {"text": [{"insert": "\n"}]},
-                ],
-                "assetIds": [asset_id],
-                "dirty": {"blankDeleted": False, "caption": False, "video": False},
-                "translationModified": {"result": False, "source": False},
-                "id": str(uuid4()),
-                "audioIds": [],
-            })
+                clips.append({
+                    "words": words,
+                    "captionMode": "MANUAL",
+                    "captions": [
+                        {"text": [{"insert": chunk_text + "\n"}]},
+                        {"text": [{"insert": "\n"}]},
+                    ],
+                    "assetIds": [asset_id],
+                    "dirty": {"blankDeleted": False, "caption": False, "video": False},
+                    "translationModified": {"result": False, "source": False},
+                    "id": str(uuid4()),
+                    "audioIds": [],
+                })
 
         project_obj = {
             "version": 15,
@@ -305,15 +309,77 @@ class VrewFileExporter(VrewExporter):
             out.append(s)
         return out
 
-    def _audio_name_from_text(self, text: str, sid: int) -> str:
+    def _audio_name_from_text(self, text: str, sid: int, chunk_idx: int) -> str:
         s = re.sub(r"\s+", " ", (text or "").strip())
         if not s:
-            return f"scene_{sid:03d}"
+            return f"scene_{sid:03d}_{chunk_idx:03d}"
         head = s[:18].strip()
         if not head:
-            return f"scene_{sid:03d}"
+            return f"scene_{sid:03d}_{chunk_idx:03d}"
         head = re.sub(r"[/:*?\"<>|\\\\]+", "_", head)
-        return head
+        return f"scene_{sid:03d}_{chunk_idx:03d}_{head}"[:120]
+
+    def _split_for_clips(self, text: str, max_chars: int) -> List[str]:
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        if not normalized:
+            return [""]
+
+        limit = max(1, int(max_chars))
+        units = self._split_meaning_units(normalized)
+        chunks: List[str] = []
+        current = ""
+        for unit in units:
+            u = unit.strip()
+            if not u:
+                continue
+            if len(u) > limit:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(self._hard_split_by_chars(u, limit))
+                continue
+
+            if not current:
+                current = u
+                continue
+
+            candidate = f"{current} {u}"
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                chunks.append(current)
+                current = u
+
+        if current:
+            chunks.append(current)
+        return chunks or [normalized]
+
+    def _split_meaning_units(self, text: str) -> List[str]:
+        # 문장 부호/줄바꿈 경계를 우선 적용한다.
+        parts = re.split(r"(?<=[\.\!\?…。！？])\s+|\n+", text)
+        out: List[str] = []
+        for p in parts:
+            s = p.strip()
+            if s:
+                out.append(s)
+        return out if out else [text]
+
+    def _hard_split_by_chars(self, text: str, max_chars: int) -> List[str]:
+        s = text.strip()
+        if not s:
+            return []
+        limit = max(1, int(max_chars))
+        out: List[str] = []
+        while s:
+            if len(s) <= limit:
+                out.append(s)
+                break
+            cut = s.rfind(" ", 0, limit + 1)
+            if cut <= 0:
+                cut = limit
+            out.append(s[:cut].strip())
+            s = s[cut:].strip()
+        return [x for x in out if x]
 
     def _build_words(self, text: str, audio_media_id: str) -> Tuple[List[Dict[str, Any]], float]:
         normalized = re.sub(r"\s+", " ", (text or "").strip())

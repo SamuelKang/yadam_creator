@@ -283,3 +283,36 @@
 	•	yadam/export/vrew_exporter.py, yadam/cli.py(기본 exporter 변경)
 	•	마이그레이션/호환:
 	•	기존 vrew_payload.json 출력도 유지(디버깅/호환용).
+
+[2026-02-26] .vrew clip 자막 분할(기본 30자) 및 동일 이미지 재사용
+	•	구분: 요구사항/구현
+	•	변경 내용:
+	•	scene.text를 의미 단락(문장 경계 우선) 기준으로 분할해 .vrew clip을 생성하도록 변경.
+	•	기본 분할 길이는 30자이며, CLI 옵션 --vrew-clip-max-chars로 조정 가능.
+	•	한 scene에서 분할된 하위 clip들은 동일한 scene 이미지를 공통 asset으로 사용.
+	•	변경 이유:
+	•	Vrew 편집 시 자막/호흡 단위를 더 세밀하게 조정하고, 이미지 일관성을 유지하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py, yadam/pipeline/orchestrator.py, yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	옵션 미지정 시 기존과 동일하게 자동 export되며, clip 단위만 더 세분화될 수 있음.
+
+[2026-02-27] CLI --help 예시 섹션에 선호 기본 실행 커맨드 추가
+	•	구분: 운영/구현
+	•	변경 내용:
+	•	`python -m yadam.cli --help`의 예시 섹션 최상단에 선호 기본 실행 4개 커맨드를 고정 배치.
+	•	향후 업데이트를 고려해 예시 섹션을 별도 블록(epilog)으로 구성.
+	•	변경 이유:
+	•	반복 사용하는 실행 패턴을 즉시 확인할 수 있게 해 운영 편의성을 높이기 위함.
+	•	영향 범위:
+	•	yadam/cli.py(argparse description/epilog)
+
+[2026-02-27] CLI 인자 오류 메시지에 간단 실행 예시 출력 및 help 실행 안정화
+	•	구분: 운영/구현
+	•	변경 내용:
+	•	필수 인자 누락 등 argparse 오류 발생 시, 에러 하단에 `--story-id` 포함 간단 실행 예시를 출력하도록 변경.
+	•	`--help`만 확인할 때 외부 의존성 미설치로 실패하지 않도록, 무거운 모듈 import를 main() 내부 지연 import로 전환.
+	•	변경 이유:
+	•	초기 실행 시 사용자 가이드를 즉시 제공하고, 테스트 환경에서 help 확인 가능성을 높이기 위함.
+	•	영향 범위:
+	•	yadam/cli.py(FriendlyArgumentParser, 지연 import)

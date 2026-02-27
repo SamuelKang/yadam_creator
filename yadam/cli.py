@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
-
-from yadam.pipeline.orchestrator import Orchestrator, PipelineConfig
-from yadam.export.vrew_exporter import VrewFileExporter
-from yadam.gen.gemini_client import VertexImagenClient, GeminiFlashImageClient
 
 
 def _ensure_dir(p: Path) -> None:
@@ -31,9 +28,38 @@ def _confirm_clean_workdir(target: Path) -> bool:
             return False
         print("y 또는 n만 입력하세요.")
 
+EXAMPLES_TEXT = "\n".join([
+    "선호 기본 실행 예시:",
+    "  python -m yadam.cli --story-id story00",
+    "  python -m yadam.cli --story-id story00 --clean-workdir",
+    "  python -m yadam.cli --story-id story00 --non-interactive",
+    "  python -m yadam.cli --story-id story00 --non-interactive --clean-workdir",
+    "",
+    "추가 예시:",
+    "  python -m yadam.cli --story-id story00 --image-api gemini_flash_image",
+    "  python -m yadam.cli --story-id story00 --vrew-clip-max-chars 40",
+])
+
+
+class FriendlyArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(
+            2,
+            f"{self.prog}: error: {message}\n\n"
+            f"간단 예시:\n"
+            f"  python -m yadam.cli --story-id story00\n"
+            f"  python -m yadam.cli --story-id story00 --non-interactive\n\n"
+            f"전체 도움말: python -m yadam.cli --help\n",
+        )
+
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = FriendlyArgumentParser(
+        description="YADAM 파이프라인 CLI: 대본 분석, 이미지 생성, .vrew export",
+        epilog=EXAMPLES_TEXT,
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     ap.add_argument("--story-id", required=True, help="예: story00")
     ap.add_argument("--project-root", default=".", help="프로젝트 루트(기본: 현재 폴더)")
     ap.add_argument("--profiles", default="yadam/config/default_profiles.yaml")
@@ -64,6 +90,12 @@ def main() -> None:
         "--clean-workdir",
         action="store_true",
         help="실행 전에 work/<story-id>/ 를 삭제하고 처음부터 재생성",
+    )
+    ap.add_argument(
+        "--vrew-clip-max-chars",
+        type=int,
+        default=30,
+        help=".vrew clip 자막 분할 최대 글자 수 (기본: 30)",
     )
     args = ap.parse_args()
 
@@ -120,6 +152,12 @@ def main() -> None:
 
     _ensure_dir(base_dir)  # story별 디렉토리 자동 생성
 
+    # 무거운 의존성은 실제 실행 직전에 import한다.
+    # 이렇게 하면 현재 환경에서 --help 검증이 가능해진다.
+    from yadam.pipeline.orchestrator import Orchestrator, PipelineConfig
+    from yadam.export.vrew_exporter import VrewFileExporter
+    from yadam.gen.gemini_client import VertexImagenClient, GeminiFlashImageClient
+
     cfg = PipelineConfig(
         base_dir=str(base_dir),
         profiles_yaml=str(root / args.profiles),
@@ -128,6 +166,7 @@ def main() -> None:
         input_script_path=str(script_path),
         json_name="project.json",
         interactive=(not args.non_interactive),  # ✅ 기본 interactive
+        vrew_clip_max_chars=max(1, int(args.vrew_clip_max_chars)),
     )
 
     if args.image_api == "vertex_imagen":
