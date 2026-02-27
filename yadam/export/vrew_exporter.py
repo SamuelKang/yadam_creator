@@ -41,14 +41,6 @@ class VrewFileExporter(VrewExporter):
     - TTS 음성은 더미 speaker("unknown") 기준 메타만 기록(실제 mp3는 포함하지 않음)
     """
 
-    WATERMARK_MEDIA_ID = "vrewmark_white_01"
-    WATERMARK_NAME = "vrewmark_white_01.png"
-    WATERMARK_PNG = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff"
-        b"\xff?\x00\x05\xfe\x02\xfeA\xec\x95\x90\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-
     def export(self, req: VrewExportRequest) -> None:
         scenes = self._collect_scenes(req.project)
         clip_text_max_chars = max(1, int(req.clip_text_max_chars))
@@ -68,15 +60,6 @@ class VrewFileExporter(VrewExporter):
         }
 
         files: List[Dict[str, Any]] = []
-        files.append({
-            "version": 1,
-            "mediaId": self.WATERMARK_MEDIA_ID,
-            "sourceOrigin": "VREW_RESOURCE",
-            "fileSize": len(self.WATERMARK_PNG),
-            "name": self.WATERMARK_NAME,
-            "type": "Image",
-            "fileLocation": "IN_MEMORY",
-        })
 
         assets: Dict[str, Any] = {}
         tts_clip_infos: Dict[str, Any] = {}
@@ -235,17 +218,6 @@ class VrewFileExporter(VrewExporter):
                 "flipSetting": {},
                 "videoRatio": 1.7777777777777777,
                 "videoSize": {"width": 1920, "height": 1080},
-                "waterMark": {
-                    "mediaId": self.WATERMARK_MEDIA_ID,
-                    "type": "watermark",
-                    "vrewMark": {"color": "WHITE", "index": 0, "position": "TOP_LEFT", "version": 2},
-                    "xPos": 0.025,
-                    "yPos": 0.037,
-                    "height": 0.16118518518518518,
-                    "width": 0.12,
-                    "rotation": 0,
-                    "customAttributes": [],
-                },
                 "lastTTSSettings": {
                     "pitch": 0,
                     "speed": 0,
@@ -276,7 +248,6 @@ class VrewFileExporter(VrewExporter):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_STORED) as zf:
             zf.writestr("media/", b"")
-            zf.writestr(f"media/{self.WATERMARK_NAME}", self.WATERMARK_PNG)
             for arcname, b in zip_media:
                 zf.writestr(arcname, b)
             zf.writestr("project.json", json.dumps(project_obj, ensure_ascii=False, indent=2).encode("utf-8"))

@@ -89,13 +89,30 @@ def attach_chapters(sentences: List[str]) -> List[Tuple[str, Optional[ChapterInf
     cur: Optional[ChapterInfo] = None
 
     for s in sentences:
-        info = parse_chapter_marker(s)
+        remain = (s or "").strip()
+
+        # sentence splitter가 줄바꿈 경계를 보존하지 못하면
+        # "§§CHAPTER|...§§ 본문..." 형태로 붙어 들어올 수 있다.
+        while remain.startswith(_MARK_PREFIX) and _MARK_SUFFIX in remain:
+            end = remain.find(_MARK_SUFFIX, len(_MARK_PREFIX))
+            if end < 0:
+                break
+            marker = remain[: end + len(_MARK_SUFFIX)]
+            info = parse_chapter_marker(marker)
+            if info is None:
+                break
+            cur = info
+            remain = remain[end + len(_MARK_SUFFIX) :].strip()
+
+        # 기존 케이스: 문장 전체가 마커일 때
+        info = parse_chapter_marker(remain)
         if info is not None:
             cur = info
             continue
+
         # 빈 문장 제거(선택)
-        if not (s and s.strip()):
+        if not remain:
             continue
-        out.append((s, cur))
+        out.append((remain, cur))
 
     return out

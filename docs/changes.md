@@ -218,6 +218,30 @@
 	•	CLI에 --image-api 옵션을 추가해 vertex_imagen 또는 gemini_flash_image를 선택 가능하게 변경.
 	•	CLI에 --image-model 옵션을 추가해 API별 기본 모델 대신 사용자 지정 모델을 주입할 수 있게 변경.
 	•	Gemini Flash Image용 ImageClient 구현(GeminiFlashImageClient) 추가.
+
+[2026-02-27] 챕터 마커(§§CHAPTER|...§§)가 scene 텍스트에 누수되는 문제 수정
+	•	구분: 구현
+	•	변경 내용:
+	•	`attach_chapters()`에서 문장 앞에 붙은 챕터 마커를 반복적으로 분리/인식한 뒤 본문만 남기도록 처리.
+	•	기존 “문장 전체가 마커일 때만 인식”하던 한계를 보완.
+	•	변경 이유:
+	•	문장 분리기가 줄바꿈 경계를 보존하지 못하는 경우, 첫 clip 자막에 `CHAPTER` 문자열이 노출되는 문제 해결.
+	•	영향 범위:
+	•	yadam/nlp/chapter_split.py
+	•	마이그레이션/호환:
+	•	기존 산출물(project.json/.vrew)에는 이미 누수된 텍스트가 남아 있을 수 있어 재생성이 필요할 수 있음.
+
+[2026-02-27] .vrew export 워터마크 강제 삽입 제거
+	•	구분: 구현
+	•	변경 내용:
+	•	Vrew exporter에서 워터마크 리소스 상수/파일 등록/`props.waterMark` 메타를 모두 제거.
+	•	zip 작성 시 `media/vrewmark_white_01.png`를 더 이상 포함하지 않음.
+	•	변경 이유:
+	•	결과물 첫 clip 및 전체 프로젝트에 불필요한 워터마크가 자동 노출되는 동작 제거.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	기존 .vrew 파일은 변경되지 않으며, 변경 반영은 재-export한 신규 파일부터 적용됨.
 	•	변경 이유:
 	•	속도/품질 비교 테스트를 위해 이미지 생성 API를 실행 시점에 전환할 수 있어야 하기 때문.
 	•	영향 범위:
