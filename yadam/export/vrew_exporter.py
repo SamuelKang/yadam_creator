@@ -16,6 +16,7 @@ class VrewExportRequest:
     project: Dict[str, Any]
     out_dir: str
     clip_text_max_chars: int = 30
+    clip_text_soft_max_chars: int = 40
 
 
 class VrewExporter(ABC):
@@ -44,6 +45,7 @@ class VrewFileExporter(VrewExporter):
     def export(self, req: VrewExportRequest) -> None:
         scenes = self._collect_scenes(req.project)
         clip_text_max_chars = max(1, int(req.clip_text_max_chars))
+        clip_text_soft_max_chars = max(clip_text_max_chars, int(req.clip_text_soft_max_chars))
         input_script = str(req.project.get("project", {}).get("input_script_path") or "").strip()
         story_name = Path(input_script).stem if input_script else "story"
 
@@ -69,7 +71,7 @@ class VrewFileExporter(VrewExporter):
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
             text = str(scene.get("text") or "").strip()
-            text_chunks = self._split_for_clips(text, clip_text_max_chars)
+            text_chunks = self._split_for_clips(text, clip_text_max_chars, clip_text_soft_max_chars)
             image_path = Path(str((scene.get("image") or {}).get("path") or "")).resolve()
 
             image_media_id = str(uuid4())
@@ -290,12 +292,13 @@ class VrewFileExporter(VrewExporter):
         head = re.sub(r"[/:*?\"<>|\\\\]+", "_", head)
         return f"scene_{sid:03d}_{chunk_idx:03d}_{head}"[:120]
 
-    def _split_for_clips(self, text: str, max_chars: int) -> List[str]:
+    def _split_for_clips(self, text: str, max_chars: int, soft_max_chars: int) -> List[str]:
         normalized = re.sub(r"\s+", " ", (text or "").strip())
         if not normalized:
             return [""]
 
         limit = max(1, int(max_chars))
+        soft_limit = max(limit, int(soft_max_chars))
         units = self._split_meaning_units(normalized)
         chunks: List[str] = []
         current = ""
@@ -307,7 +310,7 @@ class VrewFileExporter(VrewExporter):
                 if current:
                     chunks.append(current)
                     current = ""
-                chunks.extend(self._hard_split_by_chars(u, limit))
+                chunks.extend(self._merge_terminal_tail(self._hard_split_by_chars(u, limit), soft_limit))
                 continue
 
             if not current:
@@ -317,6 +320,8 @@ class VrewFileExporter(VrewExporter):
             candidate = f"{current} {u}"
             if len(candidate) <= limit:
                 current = candidate
+            elif self._can_merge_terminal_unit(candidate, u, soft_limit):
+                current = candidate
             else:
                 chunks.append(current)
                 current = u
@@ -324,6 +329,32 @@ class VrewFileExporter(VrewExporter):
         if current:
             chunks.append(current)
         return chunks or [normalized]
+
+    def _can_merge_terminal_unit(self, candidate: str, next_unit: str, soft_max_chars: int) -> bool:
+        s = (next_unit or "").strip()
+        if not s:
+            return False
+        if len(candidate) > max(1, int(soft_max_chars)):
+            return False
+        return self._ends_with_terminal_punct(s)
+
+    def _merge_terminal_tail(self, chunks: List[str], soft_max_chars: int) -> List[str]:
+        if len(chunks) < 2:
+            return chunks
+        prev = chunks[-2].strip()
+        tail = chunks[-1].strip()
+        if not prev or not tail:
+            return chunks
+        candidate = f"{prev} {tail}"
+        if len(candidate) > max(1, int(soft_max_chars)):
+            return chunks
+        if not self._ends_with_terminal_punct(tail):
+            return chunks
+        return chunks[:-2] + [candidate]
+
+    def _ends_with_terminal_punct(self, text: str) -> bool:
+        s = (text or "").strip()
+        return bool(re.search(r"[\.\!\?…。！？][\"'”’\)\]]*$", s) or re.search(r"[\.\!\?…。！？]$", s))
 
     def _split_meaning_units(self, text: str) -> List[str]:
         # 문장 부호/줄바꿈 경계를 우선 적용한다.
