@@ -431,3 +431,60 @@
 	•	yadam/export/vrew_exporter.py
 	•	마이그레이션/호환:
 	•	기존 .vrew 파일에는 반영되지 않으며, 재-export한 신규 파일부터 적용됨.
+
+[2026-02-28] .vrew clip 분할 규칙을 대사/문장/절 중심으로 재설계
+	•	구분: 구현
+	•	변경 내용:
+	•	인용부호로 감싼 대사는 줄바꿈이 있어도 하나의 의미 단위로 병합한 뒤, 다문장 대사는 문장 경계로 clip 분할되도록 조정.
+	•	서술 문장은 쉼표 절 분할을 유지하되, `그때,` 같은 짧은 도입 절은 단독 clip으로 분리되지 않도록 길이 기준을 추가.
+	•	긴 대사 강제 분할 시 따옴표만 남는 clip이 생기지 않도록, 인용부호는 첫/마지막 clip에만 배치하도록 수정.
+	•	변경 이유:
+	•	대사/서술이 문자 수 기준으로 어색하게 잘리거나, `"`만 남는 clip이 생기는 문제를 줄이고 Vrew 편집 단위를 자연스럽게 유지하기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	기존 .vrew 파일에는 반영되지 않으며, 재-export한 신규 파일부터 적용됨.
+
+[2026-02-28] .vrew TTS용 텍스트를 자막 텍스트와 분리하고 안전 정제 적용
+	•	구분: 구현
+	•	변경 내용:
+	•	표시용 자막(`captions`)은 원문을 유지하고, TTS용 `ttsClipInfosMap.text.raw/processed`와 word alignment는 정제된 텍스트를 사용하도록 변경.
+	•	따옴표/특수 인용부호/줄바꿈/기호를 정리하고, 내부 문장 종결부호를 일부 완화해 Vrew가 문장 단위로 과도하게 재분해하는 가능성을 낮춤.
+	•	정제 후 읽을 텍스트가 남지 않는 quote-only/symbol-only chunk는 clip export 자체를 건너뛰도록 변경.
+	•	변경 이유:
+	•	Vrew에서 "목소리로 변환할 수 없는 특수문자" 또는 "AI 목소리로 읽어줄 텍스트가 입력되지 않았습니다" 오류로 음성 적용이 중단되는 문제를 완화하기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	기존 .vrew 파일에는 반영되지 않으며, 재-export한 신규 파일부터 적용됨.
+
+[2026-02-28] scene prompt 웹툰 렌더링 양의 지시 강화 및 clip 스타일 앵커 보강
+	•	구분: 구현/튜닝
+	•	변경 내용:
+	•	scene prompt LLM 규칙에 만화식 표면, 평면 색면, 선명한 윤곽선, 웹툰식 명암/톤 분리, 스타일라이즈드 얼굴/손 묘사를 명시적으로 추가.
+	•	clip용 스타일 프로필 `k_webtoon_clip`에 `visible ink outlines`, `full-color cel shading`, `simplified comic surfaces`, `non-photoreal webtoon rendering` 등을 추가.
+	•	변경 이유:
+	•	동굴/등불/젖은 바위/혈흔 같은 장면에서 실사/영화 스틸 쪽으로 미끄러지는 현상을 줄이고, 금지문 위주가 아니라 양의 스타일 지시로 웹툰 일관성을 높이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py, yadam/config/default_profiles.yaml
+
+[2026-02-28] scene prompt 인물 선택을 본문 등장 우선으로 변경
+	•	구분: 구현
+	•	변경 내용:
+	•	scene prompt용 인물 선택을 `characters[:2]` 고정에서, 장면 본문에 직접 등장하는 인물/핵심 인물을 우선하는 점수 기반 선택으로 교체.
+	•	`... 대감 쪽에서 사람을 보내 ...` 같은 간접 언급 인물은 감점하도록 조정.
+	•	변경 이유:
+	•	직접 등장하는 핵심 인물이 continuity lock에서 빠지고, 간접 언급 인물이 대신 들어가 성별/복장 일관성이 깨지는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py
+
+[2026-02-28] 캐릭터 variant(노비/무관)별 복식 앵커와 프리셋 우선순위 수정
+	•	구분: 구현
+	•	변경 내용:
+	•	`노비` variant에서는 `무관 도포`, `장검`, `호패`, `관복`, `갑옷` 계열 앵커를 제거하고, `거친 무명 적삼`, `해진 소매`, `단순한 허리끈` 등 하류 복식 프리셋을 우선 적용.
+	•	`무관` variant에서는 반대로 `노비`, `무명 적삼`, `해진` 계열 앵커를 제거.
+	•	character prompt builder에서 variant가 generic `양반/T3/상류 복식` 프리셋보다 우선하도록 override를 추가.
+	•	변경 이유:
+	•	안윤처럼 하나의 캐릭터가 `노비/무관` 두 상태를 가질 때 장면과 캐릭터 시트 양쪽에서 복식이 뒤섞여 일관성이 깨지는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/pipeline/orchestrator.py, yadam/prompts/builder.py

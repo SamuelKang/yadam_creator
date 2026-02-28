@@ -105,6 +105,16 @@ def build_character_prompt(
     sc = (social_class or "").strip()
     wl = (wealth_level or "").strip()
     tier = (wardrobe_tier or "T2").strip().upper()
+    variant_norm = variant_line.strip()
+
+    # Variant should override generic class/tier presets when it implies a clear disguise/state.
+    if variant_norm == "노비":
+        sc = "천민"
+        wl = "빈곤"
+        tier = "T1"
+    elif variant_norm == "무관":
+        if tier == "T1":
+            tier = "T2"
 
     wardrobe_bits: List[str] = []
     # LLM이 준 wardrobe_anchors를 우선 사용
@@ -155,7 +165,14 @@ def build_character_prompt(
     else:
         # 민간/기타 프리셋: social_class + wealth/tier
         # tier 우선(몰락 양반을 표현 가능)
-        if tier == "T3":
+        if variant_norm == "노비":
+            wardrobe_bits += [
+                "하류 복식: 거친 무명 적삼, 해진 소매와 단순한 허리끈",
+                "장식 없는 차림, 노동과 도피의 생활감",
+                "갓/관모/도포/관복/갑옷 금지",
+                "짚신 또는 낡은 신발, 실용적이고 초라한 소지품만 허용",
+            ]
+        elif tier == "T3":
             wardrobe_bits += [
                 "민간 상류 복식: 비단/명주 느낌(과장 금지)",
                 "정갈한 갓/도포 또는 당의/치마(성별/신분에 맞게)",
@@ -172,7 +189,9 @@ def build_character_prompt(
             ]
 
         # 신분 힌트(추가 보정)
-        if sc == "양반":
+        if variant_norm == "노비":
+            wardrobe_bits += ["노동/도피 흔적이 남은 검소하고 거친 복식"]
+        elif sc == "양반":
             wardrobe_bits += ["사대부 느낌의 단정함(화려함보다 격식)"]
         elif sc == "중인":
             wardrobe_bits += ["실용적이되 정갈한 차림, 절제된 소품"]

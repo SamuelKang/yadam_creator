@@ -16,7 +16,7 @@ class VrewExportRequest:
     project: Dict[str, Any]
     out_dir: str
     clip_text_max_chars: int = 30
-    clip_text_soft_max_chars: int = 40
+    clip_text_soft_max_chars: int = 45
 
 
 class VrewExporter(ABC):
@@ -114,7 +114,10 @@ class VrewFileExporter(VrewExporter):
             for chunk_idx, chunk_text in enumerate(text_chunks, start=1):
                 audio_media_id = str(uuid4())
                 audio_name = self._audio_name_from_text(chunk_text, sid, chunk_idx)
-                words, duration = self._build_words(chunk_text, audio_media_id)
+                tts_text = self._normalize_tts_text(chunk_text)
+                if not self._should_export_tts_chunk(chunk_text, tts_text):
+                    continue
+                words, duration = self._build_words(tts_text, audio_media_id)
                 files.append({
                     "version": 1,
                     "mediaId": audio_media_id,
@@ -131,8 +134,8 @@ class VrewFileExporter(VrewExporter):
                 })
                 tts_clip_infos[audio_media_id] = {
                     "text": {
-                        "raw": chunk_text,
-                        "processed": chunk_text,
+                        "raw": tts_text,
+                        "processed": tts_text,
                         "textAspectLang": "ko",
                     },
                     "speaker": {
@@ -306,11 +309,20 @@ class VrewFileExporter(VrewExporter):
             u = unit.strip()
             if not u:
                 continue
+            if self._can_keep_soft_unit(u, soft_limit):
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.append(u)
+                continue
             if len(u) > limit:
                 if current:
                     chunks.append(current)
                     current = ""
-                chunks.extend(self._merge_terminal_tail(self._hard_split_by_chars(u, limit), soft_limit))
+                if self._is_wrapped_dialogue(u):
+                    chunks.extend(self._split_wrapped_dialogue(u, limit, soft_limit))
+                else:
+                    chunks.extend(self._merge_terminal_tail(self._hard_split_by_chars(u, limit), soft_limit))
                 continue
 
             if not current:
@@ -334,9 +346,23 @@ class VrewFileExporter(VrewExporter):
         s = (next_unit or "").strip()
         if not s:
             return False
+        prev_len = len(candidate) - len(s) - 1
         if len(candidate) > max(1, int(soft_max_chars)):
             return False
+        if prev_len >= 15 and len(s) >= 14:
+            return False
         return self._ends_with_terminal_punct(s)
+
+    def _can_keep_soft_unit(self, text: str, soft_max_chars: int) -> bool:
+        s = (text or "").strip()
+        if not s:
+            return False
+        if self._is_wrapped_dialogue(s):
+            inner = s[1:-1].strip()
+            return len(self._split_sentence_units(inner)) <= 1
+        if len(s) > max(1, int(soft_max_chars)):
+            return False
+        return s.endswith(",")
 
     def _merge_terminal_tail(self, chunks: List[str], soft_max_chars: int) -> List[str]:
         if len(chunks) < 2:
@@ -348,23 +374,153 @@ class VrewFileExporter(VrewExporter):
         candidate = f"{prev} {tail}"
         if len(candidate) > max(1, int(soft_max_chars)):
             return chunks
+        if len(prev) >= 15 and len(tail) >= 14:
+            return chunks
         if not self._ends_with_terminal_punct(tail):
             return chunks
         return chunks[:-2] + [candidate]
+
+    def _split_wrapped_dialogue(self, text: str, max_chars: int, soft_max_chars: int) -> List[str]:
+        s = (text or "").strip()
+        if not self._is_wrapped_dialogue(s):
+            return self._merge_terminal_tail(self._hard_split_by_chars(s, max_chars), soft_max_chars)
+
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+
+        sentence_units = self._split_sentence_units(inner)
+        if len(sentence_units) > 1:
+            out: List[str] = []
+            for idx, part in enumerate(sentence_units):
+                p = part.strip()
+                if not p:
+                    continue
+                if idx == 0:
+                    out.append(f"\"{p}")
+                elif idx == len(sentence_units) - 1:
+                    out.append(f"{p}\"")
+                else:
+                    out.append(p)
+            return out
+
+        parts = self._merge_terminal_tail(self._hard_split_by_chars(inner, max_chars), soft_max_chars)
+        if not parts:
+            return []
+        if len(parts) == 1:
+            return [f"\"{parts[0]}\""]
+
+        out: List[str] = []
+        for idx, part in enumerate(parts):
+            p = part.strip()
+            if not p:
+                continue
+            if idx == 0:
+                out.append(f"\"{p}")
+            elif idx == len(parts) - 1:
+                out.append(f"{p}\"")
+            else:
+                out.append(p)
+        return out
 
     def _ends_with_terminal_punct(self, text: str) -> bool:
         s = (text or "").strip()
         return bool(re.search(r"[\.\!\?…。！？][\"'”’\)\]]*$", s) or re.search(r"[\.\!\?…。！？]$", s))
 
     def _split_meaning_units(self, text: str) -> List[str]:
-        # 문장 부호/줄바꿈 경계를 우선 적용한다.
-        parts = re.split(r"(?<=[\.\!\?…。！？])\s+|\n+", text)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return [text]
+
+        merged_lines: List[str] = []
+        buf = ""
+        in_quote = False
+
+        for line in lines:
+            piece = line.strip()
+            if not piece:
+                continue
+
+            buf = f"{buf} {piece}".strip() if buf else piece
+            in_quote = self._quote_balance(buf) % 2 == 1
+            if in_quote:
+                continue
+
+            merged_lines.append(buf)
+            buf = ""
+
+        if buf:
+            merged_lines.append(buf)
+
         out: List[str] = []
-        for p in parts:
-            s = p.strip()
+        for line in merged_lines:
+            out.extend(self._split_non_dialogue_segments(line))
+
+        cleaned = [self._normalize_wrapped_dialogue(s.strip()) for s in out if s and s.strip()]
+        return cleaned if cleaned else [text]
+
+    def _split_non_dialogue_segments(self, text: str) -> List[str]:
+        s = (text or "").strip()
+        if not s:
+            return []
+        if self._is_wrapped_dialogue(s):
+            return [s]
+
+        segments: List[str] = []
+        start = 0
+        in_quote = False
+        for idx, ch in enumerate(s):
+            if ch == "\"":
+                in_quote = not in_quote
+                if not in_quote:
+                    seg = s[start : idx + 1].strip()
+                    if seg:
+                        segments.append(seg)
+                    start = idx + 1
+                continue
+
+            if in_quote:
+                continue
+
+            if ch in ".!?。！？":
+                seg = s[start : idx + 1].strip()
+                if seg:
+                    segments.append(seg)
+                start = idx + 1
+                continue
+
+            if ch == ",":
+                seg = s[start : idx + 1].strip()
+                if seg and len(seg) >= 15:
+                    segments.append(seg)
+                    start = idx + 1
+
+        tail = s[start:].strip()
+        if tail:
+            segments.append(tail)
+        return segments or [s]
+
+    def _split_sentence_units(self, text: str) -> List[str]:
+        parts = re.split(r"(?<=[\.\!\?。！？])\s+", (text or "").strip())
+        out: List[str] = []
+        for part in parts:
+            s = part.strip()
             if s:
                 out.append(s)
-        return out if out else [text]
+        return out
+
+    def _quote_balance(self, text: str) -> int:
+        return (text or "").count("\"")
+
+    def _is_wrapped_dialogue(self, text: str) -> bool:
+        s = (text or "").strip()
+        return len(s) >= 2 and s.startswith("\"") and s.endswith("\"")
+
+    def _normalize_wrapped_dialogue(self, text: str) -> str:
+        s = (text or "").strip()
+        if not self._is_wrapped_dialogue(s):
+            return s
+        return f"\"{s[1:-1].strip()}\""
 
     def _hard_split_by_chars(self, text: str, max_chars: int) -> List[str]:
         s = text.strip()
@@ -447,3 +603,74 @@ class VrewFileExporter(VrewExporter):
             "playbackRate": 1,
         })
         return words, round(t, 3)
+
+    def _normalize_tts_text(self, text: str) -> str:
+        original = str(text or "")
+        s = original
+        # Keep caption text untouched, but make TTS text conservative for Vrew voice synthesis.
+        replacements = {
+            "\r": " ",
+            "\n": " ",
+            "\"": "",
+            "'": "",
+            "“": "",
+            "”": "",
+            "‘": "",
+            "’": "",
+            "…": ".",
+            "·": " ",
+            "—": " ",
+            "–": " ",
+            "(": " ",
+            ")": " ",
+            "[": " ",
+            "]": " ",
+            "{": " ",
+            "}": " ",
+            "<": " ",
+            ">": " ",
+        }
+        for old, new in replacements.items():
+            s = s.replace(old, new)
+        s = self._soften_tts_sentence_breaks(s)
+        s = re.sub(r"[`~^*_=/\\|#@]+", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if s:
+            return s
+
+        # Fallback: recover readable Korean/ASCII text if aggressive stripping emptied the clip.
+        fallback = re.sub(r"[\r\n\t]+", " ", original)
+        fallback = re.sub(r"[^\w\s가-힣.,!?。！？,:;\"'%-]+", " ", fallback, flags=re.UNICODE)
+        fallback = re.sub(r"\s+", " ", fallback).strip(" \"'")
+        if fallback:
+            return fallback
+        return ""
+
+    def _soften_tts_sentence_breaks(self, text: str) -> str:
+        s = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not s:
+            return s
+        parts = re.split(r"(?<=[.!?。！？])\s+", s)
+        if len(parts) <= 1:
+            return s
+
+        softened: List[str] = []
+        for idx, part in enumerate(parts):
+            p = part.strip()
+            if not p:
+                continue
+            if idx < len(parts) - 1:
+                p = re.sub(r"[.!?。！？]+$", ",", p)
+            softened.append(p)
+        return " ".join(softened).strip()
+
+    def _should_export_tts_chunk(self, original_text: str, tts_text: str) -> bool:
+        if (tts_text or "").strip():
+            return True
+        s = re.sub(r"\s+", "", str(original_text or ""))
+        if not s:
+            return False
+        # Skip quote-only or symbol-heavy chunks that have no readable TTS payload.
+        if re.fullmatch(r"['\"“”‘’`.,!?。！？:;()\[\]{}<>\-_=+/*\\|~^]+", s):
+            return False
+        return False

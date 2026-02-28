@@ -318,6 +318,86 @@ class Orchestrator:
             return "약 5세"
         return (raw_hint or "").strip()
 
+    def _filter_anchors_by_variant(self, anchors: List[str], variant: str) -> List[str]:
+        out = self._clean_str_list(anchors)
+        v = (variant or "").strip()
+        if not v:
+            return out
+
+        if v == "노비":
+            blocked = ("무관", "장검", "호패", "인장", "은침통", "갑옷", "관복")
+            keep = [s for s in out if not any(k in s for k in blocked)]
+            preferred = [s for s in keep if any(k in s for k in ("노비", "무명", "적삼", "거친", "해진"))]
+            return preferred + [s for s in keep if s not in preferred]
+
+        if v == "무관":
+            blocked = ("노비", "무명 적삼", "해진", "거친")
+            keep = [s for s in out if not any(k in s for k in blocked)]
+            preferred = [s for s in keep if any(k in s for k in ("무관", "도포", "장검", "호패", "인장"))]
+            return preferred + [s for s in keep if s not in preferred]
+
+        return out
+
+    def _scene_character_score(
+        self,
+        scene_text: str,
+        cobj: Dict[str, Any],
+        order_idx: int,
+    ) -> int:
+        name = str(cobj.get("name") or "").strip()
+        if not name:
+            return -10_000
+
+        text = str(scene_text or "")
+        score = max(0, 50 - order_idx)
+
+        if cobj.get("role") == "주인공":
+            score += 10
+
+        direct_patterns = [
+            rf"{re.escape(name)}[은는이가을를의]",
+            rf"{re.escape(name)}\s*대감[은는이가을를의]?",
+            rf"\"{re.escape(name)}",
+        ]
+        if any(re.search(p, text) for p in direct_patterns):
+            score += 120
+        elif name in text:
+            score += 60
+
+        # Indirect mention such as "... 박종악 대감 쪽에서 사람을 보내 ..."
+        indirect_patterns = [
+            rf"{re.escape(name)}[^.\n]{{0,12}}쪽",
+            rf"{re.escape(name)}[^.\n]{{0,18}}사람을 보내",
+            rf"{re.escape(name)}[^.\n]{{0,18}}문안을",
+        ]
+        if any(re.search(p, text) for p in indirect_patterns):
+            score -= 90
+
+        return score
+
+    def _select_scene_character_ids(
+        self,
+        scene_text: str,
+        char_ids: List[str],
+        char_map: Dict[str, Dict[str, Any]],
+        limit: int = 2,
+    ) -> List[str]:
+        ranked: List[Tuple[int, str]] = []
+        for idx, cid in enumerate(char_ids):
+            cobj = char_map.get(cid)
+            if not isinstance(cobj, dict):
+                continue
+            ranked.append((self._scene_character_score(scene_text, cobj, idx), cid))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+
+        out: List[str] = []
+        for _, cid in ranked:
+            if cid not in out:
+                out.append(cid)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
     def _pick_main_characters(self, project: Dict[str, Any], max_supporting: int = 4) -> List[Dict[str, Any]]:
         chars = [c for c in project.get("characters", []) if isinstance(c, dict)]
         scenes = [s for s in project.get("scenes", []) if isinstance(s, dict)]
@@ -872,6 +952,7 @@ class Orchestrator:
                     if not isinstance(wardrobe_anchors, list):
                         wardrobe_anchors = []
                     wardrobe_anchors = self._filter_anchors_by_stage(wardrobe_anchors, age_stage_for_prompt)
+                    wardrobe_anchors = self._filter_anchors_by_variant(wardrobe_anchors, var)
 
                     prompt = build_character_prompt(
                         self.era, self.char_style, name, anchors2,
@@ -1133,6 +1214,8 @@ class Orchestrator:
 
                 char_objs: List[Dict[str, Any]] = []
                 char_ids = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
+                scene_text = str(s_obj.get("text", ""))
+                selected_char_ids = self._select_scene_character_ids(scene_text, char_ids, char_map, limit=2)
 
                 inst_map: Dict[str, str] = {}
                 ci = s_obj.get("character_instances", [])
@@ -1144,7 +1227,7 @@ class Orchestrator:
                             if isinstance(cid2, str):
                                 inst_map[cid2] = str(var)
 
-                for cid2 in char_ids[:2]:
+                for cid2 in selected_char_ids:
                     cobj = char_map.get(cid2)
                     if not isinstance(cobj, dict):
                         continue
@@ -1159,6 +1242,10 @@ class Orchestrator:
                     wardrobe_anchors2 = self._filter_anchors_by_stage(
                         self._clean_str_list(cobj.get("wardrobe_anchors") or []),
                         age_stage2,
+                    )
+                    wardrobe_anchors2 = self._filter_anchors_by_variant(
+                        wardrobe_anchors2,
+                        variant,
                     )
 
                     char_objs.append({
@@ -1176,7 +1263,6 @@ class Orchestrator:
                         "visual_anchors": visual_anchors2,
                     })
 
-                scene_text = str(s_obj.get("text", ""))
                 shot = _shot_hint(sid)
                 t_hint = _time_hint(scene_text)
                 focus = _focus_hint(scene_text)

@@ -25,7 +25,8 @@ style_profiles:
 
   k_webtoon_clip:
     suffix: |
-      화풍: 16:9, Digital illustration, webtoon style, vibrant colors, clean lines, korean historical manhwa style.
+      화풍: 16:9, Korean historical manhwa style, 2D digital illustration, visible ink outlines, full-color cel shading,
+      simplified comic surfaces, flat color planes, graphic shadow shapes, stylized faces and hands, non-photoreal webtoon rendering.
 
   photoreal_cinematic:
     suffix: |
