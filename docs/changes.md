@@ -530,11 +530,25 @@
 	•	구분: 구현
 	•	변경 내용:
 	•	CLI에 `--synopsis` 옵션을 추가해 `--story-id` 없이도 시놉시스 생성만 단독 실행할 수 있도록 변경.
-	•	`prompts/make_synopsis.txt`를 프롬프트 템플릿으로 읽고, 입력 문구를 LLM(`gemini-2.5-flash`)에 전달한 뒤 `synopsis/storyNN.synopsis` 파일로 저장.
-	•	파일 번호는 기존 `synopsis/story*.synopsis`, 이전 규칙인 `synopsis/storyp*.synopsis`, 그리고 `stories/story*.txt`의 최대 번호를 기준으로 다음 값을 사용.
+	•	`prompts/make_synopsis.txt`를 프롬프트 템플릿으로 읽고, 입력 문구를 LLM(`gemini-2.5-flash`)에 전달한 뒤 `stories/storyNN.synopsis` 파일로 저장.
+	•	입력 제목/훅은 `stories/storyNN.title` 파일에도 함께 저장.
+	•	파일 번호는 기존 `synopsis/story*.synopsis`, 이전 규칙인 `synopsis/storyp*.synopsis`, `stories/story*.synopsis`, 그리고 `stories/story*.txt`의 최대 번호를 기준으로 다음 값을 사용.
 	•	변경 이유:
 	•	스토리 본문 생성과 분리해서, 제목/훅 한 줄로 시놉시스 초안을 빠르게 만들 수 있게 하기 위함.
 	•	영향 범위:
 	•	yadam/cli.py
 	•	마이그레이션/호환:
 	•	기존 스토리 생성 경로에는 영향 없음. `--synopsis` 사용 시에만 별도 동작함.
+
+[2026-03-02] `--story-id` 기반 시놉시스 생성 흐름으로 CLI 분기 조정
+	•	구분: 구현
+	•	변경 내용:
+	•	`python -m yadam.cli --story-id story06` 실행 시 `stories/story06.title`을 읽어 `prompts/make_synopsis.txt`로 LLM 호출 후 `stories/story06.synopsis`를 생성하도록 변경.
+	•	현재 단계에서는 `storyNN.synopsis` 생성까지만 수행하고, 이후 `storyNN.txt` 생성 및 이미지 파이프라인은 아직 연결하지 않음.
+	•	`stories/storyNN.synopsis`가 이미 존재하면 interactive 모드에서는 덮어쓸지 `y/n`으로 확인하고, `--non-interactive` 모드에서는 확인 없이 덮어씀.
+	•	변경 이유:
+	•	작업 흐름을 `title -> synopsis -> story -> images`로 분리해 단계별 검토와 재실행을 단순화하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py
+	•	마이그레이션/호환:
+	•	기존 `--story-id` 전체 파이프라인 경로는 잠시 비활성화되며, 현재는 synopsis 생성 전용으로 동작함.

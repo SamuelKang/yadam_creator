@@ -30,6 +30,20 @@ def _confirm_clean_workdir(target: Path) -> bool:
             return False
         print("y 또는 n만 입력하세요.")
 
+
+def _confirm_overwrite(target: Path) -> bool:
+    print("")
+    print("=" * 72)
+    print("[CONFIRM] 파일이 이미 존재합니다. 덮어쓸까요? (y/n)")
+    print(f"- overwrite: {target}")
+    while True:
+        ans = input("> ").strip().lower()
+        if ans == "y":
+            return True
+        if ans == "n":
+            return False
+        print("y 또는 n만 입력하세요.")
+
 EXAMPLES_TEXT = "\n".join([
     "선호 기본 실행 예시:",
     "  python -m yadam.cli --story-id story00",
@@ -69,7 +83,7 @@ def main() -> None:
     ap.add_argument(
         "--synopsis",
         default="",
-        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 synopsis/storyNN.synopsis 파일을 생성",
+        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 stories/storyNN.synopsis 파일을 생성",
     )
     ap.add_argument("--project-root", default=".", help="프로젝트 루트(기본: 현재 폴더)")
     ap.add_argument("--profiles", default="yadam/config/default_profiles.yaml")
@@ -143,6 +157,9 @@ def main() -> None:
     work_dir = root / "work"
     _ensure_dir(stories_dir)
     _ensure_dir(work_dir)
+
+    _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
+    return
 
     script_path = stories_dir / f"{story_id}.txt"
     if not script_path.exists():
@@ -244,12 +261,46 @@ def main() -> None:
 
 
 def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
+    synopsis_dir = root / "synopsis"
+    stories_dir = root / "stories"
+    _ensure_dir(stories_dir)
+    next_no = _next_synopsis_no(root, synopsis_dir)
+    out_path = stories_dir / f"story{next_no:02d}.synopsis"
+    title_path = stories_dir / f"story{next_no:02d}.title"
+    _generate_synopsis_file(root, synopsis_input, out_path)
+    title_path.write_text(synopsis_input.strip() + "\n", encoding="utf-8")
+    print(f"[INFO] title saved: {title_path}")
+
+
+def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool) -> None:
+    stories_dir = root / "stories"
+    title_path = stories_dir / f"{story_id}.title"
+    synopsis_path = stories_dir / f"{story_id}.synopsis"
+
+    if not title_path.exists():
+        raise FileNotFoundError(
+            f"시놉시스 생성을 위한 제목 파일이 없습니다: {title_path}\n"
+            f"먼저 {title_path.name} 파일을 만들고 제목 한 줄을 넣으세요."
+        )
+
+    title_text = title_path.read_text(encoding="utf-8").strip()
+    if not title_text:
+        raise RuntimeError(f"제목 파일이 비어 있습니다: {title_path}")
+
+    if synopsis_path.exists():
+        print(f"[INFO] synopsis file already exists: {synopsis_path}")
+        if (not non_interactive) and (not _confirm_overwrite(synopsis_path)):
+            print("[INFO] synopsis generation cancelled by user")
+            return
+
+    _generate_synopsis_file(root, title_text, synopsis_path)
+
+
+def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> None:
     from google import genai
     from google.genai import types
 
     prompts_dir = root / "prompts"
-    synopsis_dir = root / "synopsis"
-    _ensure_dir(synopsis_dir)
 
     prompt_path = prompts_dir / "make_synopsis.txt"
     if not prompt_path.exists():
@@ -258,9 +309,6 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
     template = prompt_path.read_text(encoding="utf-8").strip()
     if not template:
         raise RuntimeError(f"시놉시스 프롬프트가 비어 있습니다: {prompt_path}")
-
-    next_no = _next_synopsis_no(root, synopsis_dir)
-    out_path = synopsis_dir / f"story{next_no:02d}.synopsis"
 
     payload = {
         "input_title_or_hook": synopsis_input,
@@ -308,6 +356,11 @@ def _next_synopsis_no(root: Path, synopsis_dir: Path) -> int:
 
     stories_dir = root / "stories"
     if stories_dir.exists():
+        for p in stories_dir.glob("story*.synopsis"):
+            stem = p.stem
+            digits = "".join(ch for ch in stem if ch.isdigit())
+            if digits:
+                nums.append(int(digits))
         for p in stories_dir.glob("story*.txt"):
             stem = p.stem
             digits = "".join(ch for ch in stem if ch.isdigit())
