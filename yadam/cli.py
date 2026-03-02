@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -44,9 +45,193 @@ def _confirm_overwrite(target: Path) -> bool:
             return False
         print("y 또는 n만 입력하세요.")
 
+
+def _load_prompt_template(root: Path, relative_path: str) -> str:
+    path = root / relative_path
+    if not path.exists():
+        raise FileNotFoundError(f"프롬프트 파일이 없습니다: {path}")
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise RuntimeError(f"프롬프트 파일이 비어 있습니다: {path}")
+    return text
+
+
+def _build_make_story_automation_override(
+    *,
+    story_id: str,
+    target_chars: int,
+    chapter_no: int | None = None,
+    chapter_title: str = "",
+) -> str:
+    lines = [
+        "[자동 실행 모드 override]",
+        f"- story_id: {story_id}",
+        f"- 목표 분량: 챕터당 약 {target_chars}자",
+        "- 지금은 대화형 세션이 아니라 배치 실행이다.",
+        "- 사용자에게 질문하지 말고, 분량 선택을 다시 묻지 말라.",
+        "- '다음' 입력을 기다리지 말라.",
+        "- 지정된 출력만 바로 생성하라.",
+        "- 설명이나 운영 안내 없이 결과 본문만 출력하라.",
+        "- 코드블록 마크다운을 사용하지 말라.",
+    ]
+    if chapter_no is not None:
+        lines.extend([
+            f"- 이번 호출에서 작성할 대상은 Chapter {chapter_no} 하나뿐이다.",
+            "- 다른 챕터를 미리 쓰거나 요약하지 말라.",
+            f"- 출력은 반드시 'Chapter {chapter_no} : (제목)' 형식으로 시작하라.",
+        ])
+    if chapter_title:
+        lines.append(f"- 이번 챕터 제목: {chapter_title}")
+    return "\n".join(lines)
+
+
+def _build_make_story_prompt(
+    *,
+    root: Path,
+    story_id: str,
+    synopsis_text: str,
+    target_chars: int,
+    chapter_no: int | None = None,
+    chapter_title: str = "",
+    chapter_outline: str = "",
+    previous_chapter_text: str = "",
+) -> str:
+    template = _load_prompt_template(root, "prompts/make_story.txt")
+    override = _build_make_story_automation_override(
+        story_id=story_id,
+        target_chars=target_chars,
+        chapter_no=chapter_no,
+        chapter_title=chapter_title,
+    )
+    payload = {
+        "story_id": story_id,
+        "target_chars_per_chapter": target_chars,
+        "chapter_no": chapter_no,
+        "chapter_title": chapter_title,
+        "chapter_outline": chapter_outline,
+        "previous_chapter_text": previous_chapter_text,
+        "full_synopsis": synopsis_text,
+    }
+    return (
+        template
+        + "\n\n"
+        + override
+        + "\n\n[입력]\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+
+
+def _parse_synopsis_chapters(synopsis_text: str) -> list[dict[str, str | int]]:
+    lines = synopsis_text.splitlines()
+    chapter_starts: list[tuple[int, int, str]] = []
+    pattern = re.compile(r"^\s*(\d+)\s*챕터\s*[:：]\s*(.+?)\s*$")
+    for idx, line in enumerate(lines):
+        m = pattern.match(line)
+        if m:
+            chapter_starts.append((idx, int(m.group(1)), m.group(2).strip()))
+
+    if not chapter_starts:
+        raise RuntimeError("시놉시스에서 'N챕터: 제목' 형식을 찾지 못했습니다.")
+
+    chapters: list[dict[str, str | int]] = []
+    for i, (start_idx, no, title) in enumerate(chapter_starts):
+        end_idx = chapter_starts[i + 1][0] if i + 1 < len(chapter_starts) else len(lines)
+        body_lines = lines[start_idx + 1:end_idx]
+        outline = "\n".join(body_lines).strip()
+        block = "\n".join(lines[start_idx:end_idx]).strip()
+        chapters.append({
+            "chapter_no": no,
+            "chapter_title": title,
+            "chapter_outline": outline,
+            "chapter_block": block,
+        })
+    return chapters
+
+def _strip_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+        cleaned = cleaned.strip()
+    return cleaned
+
+
+def _sanitize_synopsis_output(text: str) -> str:
+    cleaned = _strip_code_fences(text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+
+    normalized: list[str] = []
+    chapter_pattern = re.compile(
+        r"^\s*(?:Chapter\s*)?(\d+)\s*(?:챕터)?\s*[:：.\-]\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        m = chapter_pattern.match(line)
+        if m:
+            normalized.append(f"{int(m.group(1))}챕터: {m.group(2).strip()}")
+        else:
+            normalized.append(line)
+
+    cleaned = "\n".join(normalized)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _normalize_story_header_line(header_line: str, expected_no: int, expected_title: str) -> str:
+    m = re.match(
+        r"^\s*(?:Chapter\s*)?(\d+)\s*[:：.\-]\s*(.+?)\s*$",
+        header_line.strip(),
+        re.IGNORECASE,
+    )
+    if m:
+        title = m.group(2).strip() or expected_title
+        return f"Chapter {int(m.group(1))} : {title}"
+    return f"Chapter {expected_no} : {expected_title}"
+
+
+def _sanitize_story_chapter_output(text: str, expected_no: int, expected_title: str) -> str:
+    cleaned = _strip_code_fences(text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+
+    while lines and (
+        not lines[0].strip()
+        or lines[0].strip().startswith("[")
+        or lines[0].strip().startswith("설명")
+        or lines[0].strip().startswith("다음")
+    ):
+        lines.pop(0)
+
+    header_idx = None
+    header_pattern = re.compile(r"^\s*(?:Chapter\s*)?\d+\s*[:：.\-]\s*.+$", re.IGNORECASE)
+    for idx, line in enumerate(lines):
+        if header_pattern.match(line.strip()):
+            header_idx = idx
+            break
+
+    body_lines: list[str]
+    if header_idx is None:
+        header = f"Chapter {expected_no} : {expected_title}"
+        body_lines = lines
+    else:
+        header = _normalize_story_header_line(lines[header_idx], expected_no, expected_title)
+        body_lines = lines[header_idx + 1:]
+
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+
+    body = "\n".join(body_lines).strip()
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    if not body:
+        raise RuntimeError(f"Chapter {expected_no} 본문이 비어 있습니다.")
+    return f"{header}\n\n{body}".strip()
+
 EXAMPLES_TEXT = "\n".join([
     "선호 기본 실행 예시:",
     "  python -m yadam.cli --story-id story00",
+    "  python -m yadam.cli --story-id story00 --make-story",
+    "  python -m yadam.cli --story-id story00 --make-story 1000",
     "  python -m yadam.cli --synopsis '\"그 신랑은 아니지라\" 바보 만득이 한마디에 혼담이 바뀌었다'",
     "  python -m yadam.cli --story-id story00 --clean-workdir",
     "  python -m yadam.cli --story-id story00 --non-interactive",
@@ -84,6 +269,15 @@ def main() -> None:
         "--synopsis",
         default="",
         help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 stories/storyNN.synopsis 파일을 생성",
+    )
+    ap.add_argument(
+        "--make-story",
+        nargs="?",
+        const=500,
+        default=0,
+        type=int,
+        choices=[500, 1000],
+        help="stories/<story-id>.synopsis를 입력으로 stories/<story-id>.txt 생성. 값 생략 시 500, 허용값: 500|1000",
     )
     ap.add_argument("--project-root", default=".", help="프로젝트 루트(기본: 현재 폴더)")
     ap.add_argument("--profiles", default="yadam/config/default_profiles.yaml")
@@ -157,6 +351,15 @@ def main() -> None:
     work_dir = root / "work"
     _ensure_dir(stories_dir)
     _ensure_dir(work_dir)
+
+    if args.make_story:
+        _run_make_story_mode(
+            root,
+            story_id,
+            target_chars=int(args.make_story or 500),
+            non_interactive=args.non_interactive,
+        )
+        return
 
     _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
     return
@@ -296,6 +499,52 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
     _generate_synopsis_file(root, title_text, synopsis_path)
 
 
+def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_interactive: bool) -> None:
+    stories_dir = root / "stories"
+    synopsis_path = stories_dir / f"{story_id}.synopsis"
+    story_path = stories_dir / f"{story_id}.txt"
+
+    if not synopsis_path.exists():
+        raise FileNotFoundError(
+            f"스토리 생성을 위한 시놉시스 파일이 없습니다: {synopsis_path}\n"
+            f"먼저 `python -m yadam.cli --story-id {story_id}` 로 시놉시스를 생성하세요."
+        )
+
+    synopsis_text = synopsis_path.read_text(encoding="utf-8").strip()
+    if not synopsis_text:
+        raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
+
+    chapters = _parse_synopsis_chapters(synopsis_text)
+    if story_path.exists():
+        print(f"[INFO] story file already exists: {story_path}")
+        if (not non_interactive) and (not _confirm_overwrite(story_path)):
+            print("[INFO] story generation cancelled by user")
+            return
+
+    generated_chapters: list[str] = []
+    previous_chapter_text = ""
+    for idx, chapter in enumerate(chapters, start=1):
+        chapter_no = int(chapter["chapter_no"])
+        chapter_title = str(chapter["chapter_title"])
+        chapter_outline = str(chapter["chapter_outline"])
+        print(f"[INFO] make-story {idx}/{len(chapters)} -> Chapter {chapter_no}: {chapter_title}")
+        chapter_text = _generate_story_chapter(
+            root=root,
+            story_id=story_id,
+            synopsis_text=synopsis_text,
+            target_chars=target_chars,
+            chapter_no=chapter_no,
+            chapter_title=chapter_title,
+            chapter_outline=chapter_outline,
+            previous_chapter_text=previous_chapter_text,
+        )
+        generated_chapters.append(chapter_text)
+        previous_chapter_text = chapter_text
+        story_path.write_text("\n\n".join(generated_chapters).strip() + "\n", encoding="utf-8")
+
+    print(f"[INFO] story saved: {story_path}")
+
+
 def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> None:
     from google import genai
     from google.genai import types
@@ -337,12 +586,60 @@ def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> 
             temperature=0.7,
         ),
     )
-    text = (getattr(resp, "text", None) or "").strip()
+    text = _sanitize_synopsis_output((getattr(resp, "text", None) or "").strip())
     if not text:
         raise RuntimeError("시놉시스 LLM 응답이 비어 있습니다.")
 
     out_path.write_text(text + "\n", encoding="utf-8")
     print(f"[INFO] synopsis saved: {out_path}")
+
+
+def _generate_story_chapter(
+    *,
+    root: Path,
+    story_id: str,
+    synopsis_text: str,
+    target_chars: int,
+    chapter_no: int,
+    chapter_title: str,
+    chapter_outline: str,
+    previous_chapter_text: str,
+) -> str:
+    from google import genai
+    from google.genai import types
+
+    prompt = _build_make_story_prompt(
+        root=root,
+        story_id=story_id,
+        synopsis_text=synopsis_text,
+        target_chars=target_chars,
+        chapter_no=chapter_no,
+        chapter_title=chapter_title,
+        chapter_outline=chapter_outline,
+        previous_chapter_text=previous_chapter_text[-1500:],
+    )
+
+    client = genai.Client()
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text=prompt)],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            temperature=0.7,
+        ),
+    )
+    text = _sanitize_story_chapter_output(
+        (getattr(resp, "text", None) or "").strip(),
+        chapter_no,
+        chapter_title,
+    )
+    if not text:
+        raise RuntimeError(f"Chapter {chapter_no} 대본 생성 응답이 비어 있습니다.")
+    return text
 
 
 def _next_synopsis_no(root: Path, synopsis_dir: Path) -> int:

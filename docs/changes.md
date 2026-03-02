@@ -544,11 +544,17 @@
 	•	구분: 구현
 	•	변경 내용:
 	•	`python -m yadam.cli --story-id story06` 실행 시 `stories/story06.title`을 읽어 `prompts/make_synopsis.txt`로 LLM 호출 후 `stories/story06.synopsis`를 생성하도록 변경.
-	•	현재 단계에서는 `storyNN.synopsis` 생성까지만 수행하고, 이후 `storyNN.txt` 생성 및 이미지 파이프라인은 아직 연결하지 않음.
 	•	`stories/storyNN.synopsis`가 이미 존재하면 interactive 모드에서는 덮어쓸지 `y/n`으로 확인하고, `--non-interactive` 모드에서는 확인 없이 덮어씀.
+	•	`--make-story [500|1000]` 옵션을 추가해 `stories/storyNN.synopsis`를 입력으로 `stories/storyNN.txt`를 생성하도록 확장.
+	•	`--make-story`는 synopsis를 `N챕터: 제목` 형식으로 파싱한 뒤, 챕터별로 LLM을 순차 호출해 `storyNN.txt`에 누적 저장한다.
+	•	값을 생략하면 기본 분량은 챕터당 `500`자, `1000` 지정 시 챕터당 `1000`자 내외를 목표로 한다.
+	•	기존 story 파일이 있으면 interactive 모드에서는 덮어쓸지 확인하고, `--non-interactive`에서는 확인 없이 덮어쓴다.
+	•	synopsis와 story chapter는 저장 전에 최소 형식 보정을 거친다.
+	•	synopsis: 코드블록 제거, 줄바꿈 정리, `N챕터: 제목` 형식 정규화.
+	•	story: 코드블록/설명문 제거, `Chapter N : 제목` 헤더 강제, 본문 공백 줄 정리.
 	•	변경 이유:
-	•	작업 흐름을 `title -> synopsis -> story -> images`로 분리해 단계별 검토와 재실행을 단순화하기 위함.
+	•	작업 흐름을 `title -> synopsis -> story -> images`로 분리해 단계별 검토와 재실행을 단순화하고, Gemini의 긴 출력 한계를 챕터 단위 생성으로 우회하기 위함.
 	•	영향 범위:
 	•	yadam/cli.py
 	•	마이그레이션/호환:
-	•	기존 `--story-id` 전체 파이프라인 경로는 잠시 비활성화되며, 현재는 synopsis 생성 전용으로 동작함.
+	•	기존 `--story-id` 전체 파이프라인 경로는 잠시 비활성화되며, 현재는 synopsis 생성 또는 `--make-story` 대본 생성까지만 동작함.
