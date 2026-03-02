@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -67,6 +68,16 @@ def _load_prompt_template(root: Path, relative_path: str) -> str:
     if not text:
         raise RuntimeError(f"프롬프트 파일이 비어 있습니다: {path}")
     return text
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(text, encoding=encoding)
+    tmp_path.replace(path)
 
 
 def _build_make_story_automation_override(
@@ -498,7 +509,7 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> str:
     next_no = _next_synopsis_no(root, synopsis_dir)
     story_id = f"story{next_no:02d}"
     title_path = stories_dir / f"story{next_no:02d}.title"
-    title_path.write_text(synopsis_input.strip() + "\n", encoding="utf-8")
+    _atomic_write_text(title_path, synopsis_input.strip() + "\n")
     print(f"[INFO] title saved: {title_path}")
     return story_id
 
@@ -507,6 +518,7 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
     stories_dir = root / "stories"
     title_path = stories_dir / f"{story_id}.title"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
+    title_hash_path = stories_dir / f".{story_id}.title.sha256"
 
     if not title_path.exists():
         raise FileNotFoundError(
@@ -517,14 +529,23 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
     title_text = title_path.read_text(encoding="utf-8").strip()
     if not title_text:
         raise RuntimeError(f"제목 파일이 비어 있습니다: {title_path}")
+    title_hash = _text_sha256(title_text)
 
     if synopsis_path.exists():
         print(f"[INFO] synopsis file already exists: {synopsis_path}")
+        if non_interactive:
+            previous_hash = ""
+            if title_hash_path.exists():
+                previous_hash = title_hash_path.read_text(encoding="utf-8").strip()
+            if previous_hash == title_hash:
+                print(f"[INFO] synopsis up-to-date: {synopsis_path}")
+                return True
         if (not non_interactive) and (not _confirm_overwrite(synopsis_path)):
             print("[INFO] synopsis generation cancelled by user")
             return False
 
     _generate_synopsis_file(root, title_text, synopsis_path)
+    _atomic_write_text(title_hash_path, title_hash + "\n")
     return True
 
 
@@ -532,6 +553,7 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
     stories_dir = root / "stories"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
     story_path = stories_dir / f"{story_id}.txt"
+    story_source_hash_path = stories_dir / f".{story_id}.story_source.sha256"
 
     if not synopsis_path.exists():
         raise FileNotFoundError(
@@ -542,6 +564,7 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
     synopsis_text = synopsis_path.read_text(encoding="utf-8").strip()
     if not synopsis_text:
         raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
+    synopsis_hash = _text_sha256(synopsis_text)
 
     chapters = _parse_synopsis_chapters(synopsis_text)
     generated_chapters: list[str] = []
@@ -552,20 +575,65 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
         print(f"[INFO] story file already exists: {story_path}")
         existing_text = story_path.read_text(encoding="utf-8").strip()
         existing_blocks = _parse_story_chapter_blocks(existing_text)
+        previous_hash = ""
+        if story_source_hash_path.exists():
+            previous_hash = story_source_hash_path.read_text(encoding="utf-8").strip()
+
+        if previous_hash and previous_hash != synopsis_hash:
+            print(f"[INFO] synopsis changed; story will be regenerated: {story_path}")
+            if (not non_interactive) and (not _confirm_overwrite(story_path)):
+                print("[INFO] story generation cancelled by user")
+                return False
+            story_path.write_text("", encoding="utf-8")
+            _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+            generated_chapters = []
+            previous_chapter_text = ""
+            start_index = 0
+            existing_blocks = []
+
+        if existing_blocks:
+            if not previous_hash:
+                if len(existing_blocks) >= len(chapters):
+                    _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+                    previous_hash = synopsis_hash
+                else:
+                    print(f"[INFO] story source hash missing; story will be regenerated: {story_path}")
+                    if (not non_interactive) and (not _confirm_overwrite(story_path)):
+                        print("[INFO] story generation cancelled by user")
+                        return False
+                    story_path.write_text("", encoding="utf-8")
+                    _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+                    generated_chapters = []
+                    previous_chapter_text = ""
+                    start_index = 0
+                    existing_blocks = []
+
         if existing_blocks:
             generated_chapters = [str(block["text"]) for block in existing_blocks]
             previous_chapter_text = generated_chapters[-1]
             last_no = int(existing_blocks[-1]["chapter_no"])
             start_index = len(existing_blocks)
             if start_index >= len(chapters):
-                print(f"[INFO] story already complete through Chapter {last_no}: {story_path}")
+                if previous_hash == synopsis_hash:
+                    print(f"[INFO] story up-to-date through Chapter {last_no}: {story_path}")
+                else:
+                    print(f"[INFO] story already complete through Chapter {last_no}: {story_path}")
                 return True
             print(f"[INFO] resuming from Chapter {last_no + 1} (last success: Chapter {last_no})")
         else:
-            if (not non_interactive) and (not _confirm_overwrite(story_path)):
+            if previous_hash == synopsis_hash and non_interactive:
+                print(f"[INFO] story source unchanged but existing file is not resumable; regenerating: {story_path}")
+                story_path.write_text("", encoding="utf-8")
+                _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+            elif (not non_interactive) and (not _confirm_overwrite(story_path)):
                 print("[INFO] story generation cancelled by user")
                 return False
-            story_path.write_text("", encoding="utf-8")
+            else:
+                story_path.write_text("", encoding="utf-8")
+                _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+
+    if not story_path.exists():
+        _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
 
     for idx, chapter in enumerate(chapters[start_index:], start=start_index + 1):
         chapter_no = int(chapter["chapter_no"])
@@ -584,9 +652,10 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
         )
         generated_chapters.append(chapter_text)
         previous_chapter_text = chapter_text
-        story_path.write_text("\n\n".join(generated_chapters).strip() + "\n", encoding="utf-8")
+        _atomic_write_text(story_path, "\n\n".join(generated_chapters).strip() + "\n")
 
     print(f"[INFO] story saved: {story_path}")
+    _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
     return True
 
 
@@ -728,7 +797,7 @@ def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> 
     if not text:
         raise RuntimeError("시놉시스 LLM 응답이 비어 있습니다.")
 
-    out_path.write_text(text + "\n", encoding="utf-8")
+    _atomic_write_text(out_path, text + "\n")
     print(f"[INFO] synopsis saved: {out_path}")
 
 

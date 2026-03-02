@@ -565,6 +565,19 @@
 	•	마이그레이션/호환:
 	•	기본 `--story-id`는 다시 전체 파이프라인을 수행하며, 단계별 단독 실행은 `--make_synopsis`, `--make-story`로 분리됨.
 
+[2026-03-02] `--title` 입력과 hash 기반 skip 규칙 추가
+	•	구분: 구현
+	•	변경 내용:
+	•	제목/훅 직접 입력 옵션의 표면 이름을 `--synopsis`에서 `--title`로 변경하고, 이전 이름은 숨김 호환 별칭으로 유지.
+	•	`python -m yadam.cli --title "..." --non-interactive` 실행 시 새 `stories/storyNN.title` 생성 후 `synopsis -> story -> 이미지/.vrew`까지 자동으로 이어지도록 정리.
+	•	`stories/.storyNN.title.sha256`를 사용해 `--non-interactive`에서 title 내용이 바뀐 경우에만 synopsis를 재생성.
+	•	`stories/.storyNN.story_source.sha256`를 사용해 synopsis 내용이 바뀐 경우에만 story를 재생성하고, 같으면 완료본 skip 또는 중간 실패 지점부터 재개.
+	•	synopsis와 story 출력, 그리고 hash sidecar는 원자적으로 저장되도록 변경.
+	•	변경 이유:
+	•	비대화형 실행에서 불필요한 재생성을 줄이고, 중간 실패 후에도 입력 기준이 바뀌지 않았다면 안전하게 이어서 실행하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py
+
 [2026-03-02] `make_story` 분량 기준을 제목 제외 본문 기준으로 명시
 	•	구분: 프롬프트
 	•	변경 내용:
