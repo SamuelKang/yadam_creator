@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -32,6 +33,7 @@ def _confirm_clean_workdir(target: Path) -> bool:
 EXAMPLES_TEXT = "\n".join([
     "선호 기본 실행 예시:",
     "  python -m yadam.cli --story-id story00",
+    "  python -m yadam.cli --synopsis '\"그 신랑은 아니지라\" 바보 만득이 한마디에 혼담이 바뀌었다'",
     "  python -m yadam.cli --story-id story00 --clean-workdir",
     "  python -m yadam.cli --story-id story00 --non-interactive",
     "  python -m yadam.cli --story-id story00 --non-interactive --clean-workdir",
@@ -63,7 +65,12 @@ def main() -> None:
         epilog=EXAMPLES_TEXT,
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    ap.add_argument("--story-id", required=True, help="예: story00")
+    ap.add_argument("--story-id", required=False, help="예: story00")
+    ap.add_argument(
+        "--synopsis",
+        default="",
+        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 synopsis/storypNN.synopsis 파일을 생성",
+    )
     ap.add_argument("--project-root", default=".", help="프로젝트 루트(기본: 현재 폴더)")
     ap.add_argument("--profiles", default="yadam/config/default_profiles.yaml")
     ap.add_argument("--era", default="joseon_yadam")
@@ -119,7 +126,15 @@ def main() -> None:
     args = ap.parse_args()
 
     root = Path(args.project_root).resolve()
-    story_id = args.story_id.strip()
+    synopsis_input = args.synopsis.strip()
+
+    if synopsis_input:
+        _run_synopsis_mode(root, synopsis_input)
+        return
+
+    story_id = (args.story_id or "").strip()
+    if not story_id:
+        raise ValueError("--story-id 또는 --synopsis 중 하나는 반드시 필요합니다.")
     if "/" in story_id or "\\" in story_id or ".." in story_id:
         raise ValueError(f"invalid story-id: {story_id}")
 
@@ -226,6 +241,79 @@ def main() -> None:
 
     orch = Orchestrator(cfg, img_client=img_client, exporter=exporter)
     orch.run()
+
+
+def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
+    from google import genai
+    from google.genai import types
+
+    prompts_dir = root / "prompts"
+    synopsis_dir = root / "synopsis"
+    _ensure_dir(synopsis_dir)
+
+    prompt_path = prompts_dir / "make_synopsis.txt"
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"시놉시스 프롬프트 파일이 없습니다: {prompt_path}")
+
+    template = prompt_path.read_text(encoding="utf-8").strip()
+    if not template:
+        raise RuntimeError(f"시놉시스 프롬프트가 비어 있습니다: {prompt_path}")
+
+    next_no = _next_synopsis_no(root, synopsis_dir)
+    out_path = synopsis_dir / f"storyp{next_no:02d}.synopsis"
+
+    payload = {
+        "input_title_or_hook": synopsis_input,
+        "output_requirements": [
+            "조선시대 야담 채널용 20챕터 시놉시스를 작성할 것",
+            "각 챕터에는 소제목을 붙일 것",
+            "출력은 바로 파일로 저장 가능한 평문 본문만 작성할 것",
+        ],
+    }
+    user_text = (
+        template
+        + "\n\n[입력]\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+
+    client = genai.Client()
+    resp = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text=user_text)],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            temperature=0.7,
+        ),
+    )
+    text = (getattr(resp, "text", None) or "").strip()
+    if not text:
+        raise RuntimeError("시놉시스 LLM 응답이 비어 있습니다.")
+
+    out_path.write_text(text + "\n", encoding="utf-8")
+    print(f"[INFO] synopsis saved: {out_path}")
+
+
+def _next_synopsis_no(root: Path, synopsis_dir: Path) -> int:
+    nums = []
+    for p in synopsis_dir.glob("storyp*.synopsis"):
+        stem = p.stem
+        digits = "".join(ch for ch in stem if ch.isdigit())
+        if digits:
+            nums.append(int(digits))
+
+    stories_dir = root / "stories"
+    if stories_dir.exists():
+        for p in stories_dir.glob("story*.txt"):
+            stem = p.stem
+            digits = "".join(ch for ch in stem if ch.isdigit())
+            if digits:
+                nums.append(int(digits))
+
+    return (max(nums) + 1) if nums else 1
 
 
 if __name__ == "__main__":

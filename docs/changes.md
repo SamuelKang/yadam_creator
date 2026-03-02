@@ -525,3 +525,16 @@
 	•	yadam/export/vrew_exporter.py
 	•	마이그레이션/호환:
 	•	기존 `.vrew`에는 반영되지 않으므로 재-export가 필요함.
+
+[2026-03-02] `--synopsis` CLI 추가로 시놉시스 단독 생성 지원
+	•	구분: 구현
+	•	변경 내용:
+	•	CLI에 `--synopsis` 옵션을 추가해 `--story-id` 없이도 시놉시스 생성만 단독 실행할 수 있도록 변경.
+	•	`prompts/make_synopsis.txt`를 프롬프트 템플릿으로 읽고, 입력 문구를 LLM(`gemini-2.5-flash`)에 전달한 뒤 `synopsis/storypNN.synopsis` 파일로 저장.
+	•	파일 번호는 기존 `synopsis/storyp*.synopsis`와 `stories/story*.txt`의 최대 번호를 기준으로 다음 값을 사용.
+	•	변경 이유:
+	•	스토리 본문 생성과 분리해서, 제목/훅 한 줄로 시놉시스 초안을 빠르게 만들 수 있게 하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py
+	•	마이그레이션/호환:
+	•	기존 스토리 생성 경로에는 영향 없음. `--synopsis` 사용 시에만 별도 동작함.
