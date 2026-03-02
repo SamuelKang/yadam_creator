@@ -620,3 +620,14 @@
 	•	Gemini API 사용 시 Vertex용 `negative_prompt` 설정이 호환성 오류를 내는 경우를 완화하고, 현재 어떤 이미지 클라이언트가 실제로 사용되는지 로그에서 바로 확인할 수 있게 하기 위함.
 	•	영향 범위:
 	•	yadam/gen/gemini_client.py, yadam/cli.py
+
+[2026-03-02] scene prompt를 shot-first 경량 규칙으로 재구성
+	•	구분: 프롬프트
+	•	변경 내용:
+	•	`llm_scene_prompt.py`의 system 지시를 레퍼런스 보드용 짧은 영어 연출문, 첫 문장은 샷/카메라 지시로 시작하는 shot-first 형식으로 강화.
+	•	공통 규칙 배열을 짧게 압축해 boilerplate 비중을 줄이고, 장면 핵심 시각 정보(인물 1~2명, 행동 1개, 배경 1개, 분위기 1개) 중심으로 prompt를 유도.
+	•	`포졸`, `주먹밥` 관련 규칙은 `scene_text`, 장소, 인물 정보에 해당 키워드가 있을 때만 삽입하도록 조건부 규칙으로 분리.
+	•	변경 이유:
+	•	Gemini 이미지 경로에서 긴 제약문보다 장면 핵심 연출이 우선되도록 하고, 드문 규칙이 모든 scene에 반복 삽입되며 토큰을 늘리는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py
