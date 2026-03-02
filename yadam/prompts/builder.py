@@ -19,6 +19,27 @@ class PromptParts:
         return f"{self.era_prefix}\n{self.content}\n{self.style_suffix}\n{self.safety}".strip()
 
 
+def _is_pojol_character(
+    name: str,
+    hints: List[str],
+    variant: str,
+    context: str,
+    court_role: str,
+    wardrobe_anchors: List[str],
+) -> bool:
+    corpus = " ".join(
+        [
+            name or "",
+            variant or "",
+            context or "",
+            court_role or "",
+            " ".join(hints or []),
+            " ".join(wardrobe_anchors or []),
+        ]
+    )
+    return any(token in corpus for token in ("포졸", "관아 나졸", "나졸", "형방"))
+
+
 def _age_stage_to_years(age_stage: str) -> Optional[int]:
     s = (age_stage or "").strip()
     table = {
@@ -106,6 +127,7 @@ def build_character_prompt(
     wl = (wealth_level or "").strip()
     tier = (wardrobe_tier or "T2").strip().upper()
     variant_norm = variant_line.strip()
+    is_pojol = _is_pojol_character(name, anchors, variant_norm, ctx, cr, wardrobe_anchors)
 
     # Variant should override generic class/tier presets when it implies a clear disguise/state.
     if variant_norm == "노비":
@@ -113,6 +135,13 @@ def build_character_prompt(
         wl = "빈곤"
         tier = "T1"
     elif variant_norm == "무관":
+        if tier == "T1":
+            tier = "T2"
+    elif is_pojol:
+        if sc in ("", "불명"):
+            sc = "중인"
+        if wl in ("", "불명"):
+            wl = "보통"
         if tier == "T1":
             tier = "T2"
 
@@ -172,6 +201,15 @@ def build_character_prompt(
                 "갓/관모/도포/관복/갑옷 금지",
                 "짚신 또는 낡은 신발, 실용적이고 초라한 소지품만 허용",
             ]
+        elif is_pojol:
+            wardrobe_bits += [
+                "조선시대 관아 소속 포졸 복식: 전통 포졸복 또는 실용적인 관아 하급 관리 복식",
+                "넓은 양반 갓이 아닌, 낮고 투박한 조선 포졸용 전통 관모",
+                "행전, 짚신 또는 거친 전통 신발, 허리띠와 실용 소지품",
+                "목봉, 곤장, 횃불 같은 전통 집행 도구만 허용, 칼과 검집은 금지",
+                "현대 제복 셔츠, 가슴 패치, 번호표, 배지, 현대식 단추 배열 금지",
+                "양반 선비의 갓과 도포 차림, 무관의 검과 장식 허리띠 금지",
+            ]
         elif tier == "T3":
             wardrobe_bits += [
                 "민간 상류 복식: 비단/명주 느낌(과장 금지)",
@@ -201,12 +239,21 @@ def build_character_prompt(
             wardrobe_bits += ["검소하고 거친 질감, 과장 금지"]
         elif sc in ("승려", "무속"):
             wardrobe_bits += [f"{sc} 계열 의복(시대감 유지)"]
+        elif is_pojol:
+            wardrobe_bits += ["관아 하급 집행 인력의 실용적이고 투박한 차림"]
 
         # wealth_level이 있으면 미세 보정
         if wl == "부유":
             wardrobe_bits += ["원단과 마감이 비교적 깔끔"]
         elif wl == "빈곤":
             wardrobe_bits += ["원단이 거칠고 마감이 단순"]
+
+    if is_pojol:
+        wardrobe_bits += [
+            "한국 사극/조선시대 포졸 실루엣 유지, 현대 경찰이나 군인처럼 보이지 않음",
+            "소매와 옷자락은 전통 복식 비례, 현대식 카고 포켓이나 셔츠 주머니 없음",
+            "양반 갓 실루엣이 아니라 관아 하급 포졸의 낮고 거친 관모 실루엣",
+        ]
 
     # 중복 제거 + 길이 제한(너무 길면 모델이 산만해짐)
     dedup: List[str] = []

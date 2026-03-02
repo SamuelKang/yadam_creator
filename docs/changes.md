@@ -238,6 +238,31 @@
 	•	zip 작성 시 `media/vrewmark_white_01.png`를 더 이상 포함하지 않음.
 	•	변경 이유:
 	•	결과물 첫 clip 및 전체 프로젝트에 불필요한 워터마크가 자동 노출되는 동작 제거.
+
+[2026-03-02] .vrew 화면/TTS 텍스트 정규화 및 인용문 clip 분할 보정
+	•	구분: 구현
+	•	변경 내용:
+	•	Vrew exporter에서 TTS 텍스트 정규화 시 괄호 보충 설명(예: `천기(天機)`)을 제거하도록 변경.
+	•	화면용 clip 분할에서 닫는 따옴표 뒤 조사(`는` 등)를 앞 인용문과 붙이고, `45자`를 넘는 일부 대사도 더 길게 유지하도록 조정.
+	•	`§§CHAPTER|...§§` 마커, 잘못 밀린 따옴표, stray quote로 인해 깨지는 화면 텍스트를 exporter 단계에서 한 번 더 정규화.
+	•	변경 이유:
+	•	Vrew 음성 읽기 품질과 자막 clip 자연스러움을 높이고, scene 텍스트에 남은 따옴표/챕터 마커 이상이 .vrew에서 그대로 노출되는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	기존 `.vrew`에는 반영되지 않으므로 재export가 필요함.
+
+[2026-03-02] scene.text 생성을 위한 quote-aware 문장 분리 도입
+	•	구분: 구현
+	•	변경 내용:
+	•	`split_sentences_korean()`를 대사 블록 인식 방식으로 재작성해, `"`로 시작한 대사는 닫는 `"`가 나올 때까지 하나의 sentence block으로 유지.
+	•	대사 내부 줄바꿈을 보존하고, `다/요` 종결과 `.?!` 종결을 분리 처리해 기존의 이중 분리(`했습니다` / `.`)를 제거.
+	•	변경 이유:
+	•	project.json의 `scene.text`/`sentences`가 대사 중간에서 끊기거나 닫는 따옴표와 `헤헤.` 같은 꼬리 문장이 다음 scene으로 밀리는 문제를 upstream에서 해결하기 위함.
+	•	영향 범위:
+	•	yadam/nlp/sentence_split.py, scene 생성 단계 전반
+	•	마이그레이션/호환:
+	•	기존 project.json에는 자동 반영되지 않으므로 scene 재생성 또는 수동 보정이 필요함.
 	•	영향 범위:
 	•	yadam/export/vrew_exporter.py
 	•	마이그레이션/호환:

@@ -296,7 +296,7 @@ class VrewFileExporter(VrewExporter):
         return f"scene_{sid:03d}_{chunk_idx:03d}_{head}"[:120]
 
     def _split_for_clips(self, text: str, max_chars: int, soft_max_chars: int) -> List[str]:
-        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        normalized = self._normalize_display_text(text)
         if not normalized:
             return [""]
 
@@ -316,6 +316,11 @@ class VrewFileExporter(VrewExporter):
                 chunks.append(u)
                 continue
             if len(u) > limit:
+                if "\"" in u and u.endswith("\"") and len(u) <= soft_limit:
+                    if current:
+                        chunks.append(current)
+                    current = u
+                    continue
                 if current:
                     chunks.append(current)
                     current = ""
@@ -329,10 +334,14 @@ class VrewFileExporter(VrewExporter):
                 current = u
                 continue
 
-            candidate = f"{current} {u}"
+            candidate = self._join_clip_units(current, u)
             if len(candidate) <= limit:
                 current = candidate
+            elif self._can_merge_inline_dialogue(current, u, candidate, soft_limit):
+                current = candidate
             elif self._can_merge_terminal_unit(candidate, u, soft_limit):
+                current = candidate
+            elif self._can_merge_dialogue_tail(current, u, candidate, soft_limit):
                 current = candidate
             else:
                 chunks.append(current)
@@ -358,8 +367,7 @@ class VrewFileExporter(VrewExporter):
         if not s:
             return False
         if self._is_wrapped_dialogue(s):
-            inner = s[1:-1].strip()
-            return len(self._split_sentence_units(inner)) <= 1
+            return len(s) <= max(1, int(soft_max_chars))
         if len(s) > max(1, int(soft_max_chars)):
             return False
         return s.endswith(",")
@@ -384,6 +392,9 @@ class VrewFileExporter(VrewExporter):
         s = (text or "").strip()
         if not self._is_wrapped_dialogue(s):
             return self._merge_terminal_tail(self._hard_split_by_chars(s, max_chars), soft_max_chars)
+        dialogue_keep_max = max(max(1, int(soft_max_chars)), 90)
+        if len(s) <= dialogue_keep_max:
+            return [s]
 
         inner = s[1:-1].strip()
         if not inner:
@@ -423,6 +434,39 @@ class VrewFileExporter(VrewExporter):
                 out.append(p)
         return out
 
+    def _join_clip_units(self, left: str, right: str) -> str:
+        l = (left or "").strip()
+        r = (right or "").strip()
+        if not l:
+            return r
+        if not r:
+            return l
+        if l.endswith("\"") and re.match(r"^[가-힣A-Za-z0-9]", r):
+            return f"{l}{r}"
+        return f"{l} {r}"
+
+    def _can_merge_dialogue_tail(self, current: str, next_unit: str, candidate: str, soft_max_chars: int) -> bool:
+        cur = (current or "").strip()
+        nxt = (next_unit or "").strip()
+        if not cur or not nxt:
+            return False
+        if not cur.endswith("\""):
+            return False
+        if len(candidate) > max(1, int(soft_max_chars)):
+            return False
+        return bool(re.match(r"^[가-힣]", nxt))
+
+    def _can_merge_inline_dialogue(self, current: str, next_unit: str, candidate: str, soft_max_chars: int) -> bool:
+        cur = (current or "").strip()
+        nxt = (next_unit or "").strip()
+        if not cur or not nxt:
+            return False
+        if not self._is_wrapped_dialogue(nxt):
+            return False
+        if len(candidate) > max(1, int(soft_max_chars)):
+            return False
+        return not self._ends_with_terminal_punct(cur)
+
     def _ends_with_terminal_punct(self, text: str) -> bool:
         s = (text or "").strip()
         return bool(re.search(r"[\.\!\?…。！？][\"'”’\)\]]*$", s) or re.search(r"[\.\!\?…。！？]$", s))
@@ -457,7 +501,20 @@ class VrewFileExporter(VrewExporter):
             out.extend(self._split_non_dialogue_segments(line))
 
         cleaned = [self._normalize_wrapped_dialogue(s.strip()) for s in out if s and s.strip()]
-        return cleaned if cleaned else [text]
+        cleaned = [s for s in cleaned if not re.fullmatch(r'["“”‘’]+', s)]
+        merged: List[str] = []
+        for item in cleaned:
+            s = item.strip()
+            if (
+                merged
+                and len(merged[-1]) <= 3
+                and not re.search(r"[,.!?。！？\"“”‘’]", merged[-1])
+                and re.match(r"^[가-힣A-Za-z]", s)
+            ):
+                merged[-1] = f"{merged[-1]} {s}".strip()
+            else:
+                merged.append(s)
+        return merged if merged else [text]
 
     def _split_non_dialogue_segments(self, text: str) -> List[str]:
         s = (text or "").strip()
@@ -471,6 +528,8 @@ class VrewFileExporter(VrewExporter):
         in_quote = False
         for idx, ch in enumerate(s):
             if ch == "\"":
+                if not in_quote and "\"" not in s[idx + 1:]:
+                    continue
                 in_quote = not in_quote
                 if not in_quote:
                     seg = s[start : idx + 1].strip()
@@ -498,7 +557,22 @@ class VrewFileExporter(VrewExporter):
         tail = s[start:].strip()
         if tail:
             segments.append(tail)
-        return segments or [s]
+
+        normalized_segments: List[str] = []
+        for seg in segments:
+            item = seg.strip()
+            if (
+                normalized_segments
+                and normalized_segments[-1].endswith("\"")
+                and (parts := item.split(None, 1))
+                and len(parts) == 2
+                and re.fullmatch(r"[가-힣]{1,2}", parts[0])
+            ):
+                normalized_segments.append(parts[0])
+                normalized_segments.append(parts[1].strip())
+                continue
+            normalized_segments.append(item)
+        return normalized_segments or [s]
 
     def _split_sentence_units(self, text: str) -> List[str]:
         parts = re.split(r"(?<=[\.\!\?。！？])\s+", (text or "").strip())
@@ -520,7 +594,28 @@ class VrewFileExporter(VrewExporter):
         s = (text or "").strip()
         if not self._is_wrapped_dialogue(s):
             return s
-        return f"\"{s[1:-1].strip()}\""
+        inner = s[1:-1].strip()
+        if self._looks_like_quoted_narration(inner):
+            return inner
+        return f"\"{inner}\""
+
+    def _normalize_display_text(self, text: str) -> str:
+        s = str(text or "")
+        s = re.sub(r"§§CHAPTER\|[^§]+§§", " ", s)
+        s = re.sub(r'([.!?。！？])"', r'\1 "', s)
+        s = re.sub(r'"\s+([가-힣A-Za-z])', r'"\1', s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _looks_like_quoted_narration(self, text: str) -> bool:
+        s = (text or "").strip()
+        if not s:
+            return False
+        if re.search(r"[?!！？]", s):
+            return False
+        if not re.search(r"(습니다|였다|했다|있었다|보였다|가리켰다|들렸다|시작했다|향했다|웃었다|떨었다|물러났다)\.$", s):
+            return False
+        return True
 
     def _hard_split_by_chars(self, text: str, max_chars: int) -> List[str]:
         s = text.strip()
@@ -608,6 +703,8 @@ class VrewFileExporter(VrewExporter):
         original = str(text or "")
         s = original
         # Keep caption text untouched, but make TTS text conservative for Vrew voice synthesis.
+        # Remove glossary-style parenthetical explanations from spoken text.
+        s = re.sub(r"\s*\([^()]*\)", "", s)
         replacements = {
             "\r": " ",
             "\n": " ",
