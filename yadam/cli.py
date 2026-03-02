@@ -227,6 +227,68 @@ def _sanitize_story_chapter_output(text: str, expected_no: int, expected_title: 
         raise RuntimeError(f"Chapter {expected_no} 본문이 비어 있습니다.")
     return f"{header}\n\n{body}".strip()
 
+
+def _parse_story_chapter_blocks(story_text: str) -> list[dict[str, str | int]]:
+    text = story_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+
+    header_pattern = re.compile(
+        r"(?m)^\s*Chapter\s+(\d+)\s*:\s*(.+?)\s*$",
+        re.IGNORECASE,
+    )
+    matches = list(header_pattern.finditer(text))
+    if not matches:
+        return []
+
+    blocks: list[dict[str, str | int]] = []
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        blocks.append({
+            "chapter_no": int(match.group(1)),
+            "chapter_title": match.group(2).strip(),
+            "text": block,
+        })
+    return blocks
+
+
+def _generate_story_chapter_with_retry(
+    *,
+    root: Path,
+    story_id: str,
+    synopsis_text: str,
+    target_chars: int,
+    chapter_no: int,
+    chapter_title: str,
+    chapter_outline: str,
+    previous_chapter_text: str,
+    max_attempts: int = 3,
+) -> str:
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if attempt > 1:
+                print(f"[INFO] make-story retry {attempt}/{max_attempts} -> Chapter {chapter_no}")
+            return _generate_story_chapter(
+                root=root,
+                story_id=story_id,
+                synopsis_text=synopsis_text,
+                target_chars=target_chars,
+                chapter_no=chapter_no,
+                chapter_title=chapter_title,
+                chapter_outline=chapter_outline,
+                previous_chapter_text=previous_chapter_text,
+            )
+        except Exception as err:
+            last_err = err
+            print(f"[WARN] Chapter {chapter_no} generation failed ({attempt}/{max_attempts}): {err}")
+    assert last_err is not None
+    raise RuntimeError(
+        f"Chapter {chapter_no} 생성이 {max_attempts}회 연속 실패했습니다. 다음 실행 시 이 챕터부터 재개합니다."
+    ) from last_err
+
 EXAMPLES_TEXT = "\n".join([
     "선호 기본 실행 예시:",
     "  python -m yadam.cli --story-id story00",
@@ -515,20 +577,35 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
         raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
 
     chapters = _parse_synopsis_chapters(synopsis_text)
-    if story_path.exists():
-        print(f"[INFO] story file already exists: {story_path}")
-        if (not non_interactive) and (not _confirm_overwrite(story_path)):
-            print("[INFO] story generation cancelled by user")
-            return
-
     generated_chapters: list[str] = []
     previous_chapter_text = ""
-    for idx, chapter in enumerate(chapters, start=1):
+    start_index = 0
+
+    if story_path.exists():
+        print(f"[INFO] story file already exists: {story_path}")
+        existing_text = story_path.read_text(encoding="utf-8").strip()
+        existing_blocks = _parse_story_chapter_blocks(existing_text)
+        if existing_blocks:
+            generated_chapters = [str(block["text"]) for block in existing_blocks]
+            previous_chapter_text = generated_chapters[-1]
+            last_no = int(existing_blocks[-1]["chapter_no"])
+            start_index = len(existing_blocks)
+            if start_index >= len(chapters):
+                print(f"[INFO] story already complete through Chapter {last_no}: {story_path}")
+                return
+            print(f"[INFO] resuming from Chapter {last_no + 1} (last success: Chapter {last_no})")
+        else:
+            if (not non_interactive) and (not _confirm_overwrite(story_path)):
+                print("[INFO] story generation cancelled by user")
+                return
+            story_path.write_text("", encoding="utf-8")
+
+    for idx, chapter in enumerate(chapters[start_index:], start=start_index + 1):
         chapter_no = int(chapter["chapter_no"])
         chapter_title = str(chapter["chapter_title"])
         chapter_outline = str(chapter["chapter_outline"])
         print(f"[INFO] make-story {idx}/{len(chapters)} -> Chapter {chapter_no}: {chapter_title}")
-        chapter_text = _generate_story_chapter(
+        chapter_text = _generate_story_chapter_with_retry(
             root=root,
             story_id=story_id,
             synopsis_text=synopsis_text,
