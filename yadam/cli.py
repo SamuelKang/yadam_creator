@@ -46,6 +46,19 @@ def _confirm_overwrite(target: Path) -> bool:
         print("y 또는 n만 입력하세요.")
 
 
+def _confirm_continue_default_yes(message: str) -> bool:
+    print("")
+    print("=" * 72)
+    print(f"[CONFIRM] {message} (Y/n)")
+    while True:
+        ans = input("> ").strip().lower()
+        if ans in ("", "y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+        print("Y, n 중 하나로 입력하세요. Enter는 Y입니다.")
+
+
 def _load_prompt_template(root: Path, relative_path: str) -> str:
     path = root / relative_path
     if not path.exists():
@@ -292,9 +305,11 @@ def _generate_story_chapter_with_retry(
 EXAMPLES_TEXT = "\n".join([
     "선호 기본 실행 예시:",
     "  python -m yadam.cli --story-id story00",
+    "  python -m yadam.cli --story-id story00 --make_synopsis",
     "  python -m yadam.cli --story-id story00 --make-story",
     "  python -m yadam.cli --story-id story00 --make-story 1000",
-    "  python -m yadam.cli --synopsis '\"그 신랑은 아니지라\" 바보 만득이 한마디에 혼담이 바뀌었다'",
+    "  python -m yadam.cli --title '\"그 신랑은 아니지라\" 바보 만득이 한마디에 혼담이 바뀌었다'",
+    "  python -m yadam.cli --title '\"그 신랑은 아니지라\" 바보 만득이 한마디에 혼담이 바뀌었다' --non-interactive",
     "  python -m yadam.cli --story-id story00 --clean-workdir",
     "  python -m yadam.cli --story-id story00 --non-interactive",
     "  python -m yadam.cli --story-id story00 --non-interactive --clean-workdir",
@@ -328,9 +343,24 @@ def main() -> None:
     )
     ap.add_argument("--story-id", required=False, help="예: story00")
     ap.add_argument(
+        "--title",
+        default="",
+        help="제목/훅 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 새 stories/storyNN.title, stories/storyNN.synopsis를 생성",
+    )
+    ap.add_argument(
         "--synopsis",
         default="",
-        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 stories/storyNN.synopsis 파일을 생성",
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
+        "--make_synopsis",
+        action="store_true",
+        help="stories/<story-id>.title을 읽어 stories/<story-id>.synopsis만 생성",
+    )
+    ap.add_argument(
+        "--make_sysnopsis",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     ap.add_argument(
         "--make-story",
@@ -396,23 +426,37 @@ def main() -> None:
     args = ap.parse_args()
 
     root = Path(args.project_root).resolve()
-    synopsis_input = args.synopsis.strip()
+    synopsis_input = (args.title or args.synopsis or "").strip()
 
-    if synopsis_input:
-        _run_synopsis_mode(root, synopsis_input)
-        return
-
-    story_id = (args.story_id or "").strip()
-    if not story_id:
-        raise ValueError("--story-id 또는 --synopsis 중 하나는 반드시 필요합니다.")
-    if "/" in story_id or "\\" in story_id or ".." in story_id:
-        raise ValueError(f"invalid story-id: {story_id}")
-
-    # stories/ 와 work/ 디렉토리 자동 생성
     stories_dir = root / "stories"
     work_dir = root / "work"
     _ensure_dir(stories_dir)
     _ensure_dir(work_dir)
+
+    if synopsis_input:
+        story_id = _run_synopsis_mode(root, synopsis_input)
+        if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
+            return
+        if args.non_interactive:
+            if not _run_make_story_mode(
+                root,
+                story_id,
+                target_chars=500,
+                non_interactive=True,
+            ):
+                return
+            _run_full_pipeline_mode(root, story_id, args)
+        return
+
+    story_id = (args.story_id or "").strip()
+    if not story_id:
+        raise ValueError("--story-id 또는 --title 중 하나는 반드시 필요합니다.")
+    if "/" in story_id or "\\" in story_id or ".." in story_id:
+        raise ValueError(f"invalid story-id: {story_id}")
+
+    if args.make_synopsis or args.make_sysnopsis:
+        _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
+        return
 
     if args.make_story:
         _run_make_story_mode(
@@ -423,24 +467,142 @@ def main() -> None:
         )
         return
 
-    _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
-    return
+    if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
+        return
+    if (not args.non_interactive) and (
+        not _confirm_continue_default_yes("시놉시스 생성을 확인했습니다. story 생성으로 진행할까요?")
+    ):
+        print("[INFO] stopped after synopsis generation")
+        return
 
+    if not _run_make_story_mode(
+        root,
+        story_id,
+        target_chars=500,
+        non_interactive=args.non_interactive,
+    ):
+        return
+    if (not args.non_interactive) and (
+        not _confirm_continue_default_yes("대본 생성을 확인했습니다. 이미지 및 .vrew 생성을 진행할까요?")
+    ):
+        print("[INFO] stopped after story generation")
+        return
+
+    _run_full_pipeline_mode(root, story_id, args)
+
+
+def _run_synopsis_mode(root: Path, synopsis_input: str) -> str:
+    synopsis_dir = root / "synopsis"
+    stories_dir = root / "stories"
+    _ensure_dir(stories_dir)
+    next_no = _next_synopsis_no(root, synopsis_dir)
+    story_id = f"story{next_no:02d}"
+    title_path = stories_dir / f"story{next_no:02d}.title"
+    title_path.write_text(synopsis_input.strip() + "\n", encoding="utf-8")
+    print(f"[INFO] title saved: {title_path}")
+    return story_id
+
+
+def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool) -> bool:
+    stories_dir = root / "stories"
+    title_path = stories_dir / f"{story_id}.title"
+    synopsis_path = stories_dir / f"{story_id}.synopsis"
+
+    if not title_path.exists():
+        raise FileNotFoundError(
+            f"시놉시스 생성을 위한 제목 파일이 없습니다: {title_path}\n"
+            f"먼저 {title_path.name} 파일을 만들고 제목 한 줄을 넣으세요."
+        )
+
+    title_text = title_path.read_text(encoding="utf-8").strip()
+    if not title_text:
+        raise RuntimeError(f"제목 파일이 비어 있습니다: {title_path}")
+
+    if synopsis_path.exists():
+        print(f"[INFO] synopsis file already exists: {synopsis_path}")
+        if (not non_interactive) and (not _confirm_overwrite(synopsis_path)):
+            print("[INFO] synopsis generation cancelled by user")
+            return False
+
+    _generate_synopsis_file(root, title_text, synopsis_path)
+    return True
+
+
+def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_interactive: bool) -> bool:
+    stories_dir = root / "stories"
+    synopsis_path = stories_dir / f"{story_id}.synopsis"
+    story_path = stories_dir / f"{story_id}.txt"
+
+    if not synopsis_path.exists():
+        raise FileNotFoundError(
+            f"스토리 생성을 위한 시놉시스 파일이 없습니다: {synopsis_path}\n"
+            f"먼저 `python -m yadam.cli --story-id {story_id}` 로 시놉시스를 생성하세요."
+        )
+
+    synopsis_text = synopsis_path.read_text(encoding="utf-8").strip()
+    if not synopsis_text:
+        raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
+
+    chapters = _parse_synopsis_chapters(synopsis_text)
+    generated_chapters: list[str] = []
+    previous_chapter_text = ""
+    start_index = 0
+
+    if story_path.exists():
+        print(f"[INFO] story file already exists: {story_path}")
+        existing_text = story_path.read_text(encoding="utf-8").strip()
+        existing_blocks = _parse_story_chapter_blocks(existing_text)
+        if existing_blocks:
+            generated_chapters = [str(block["text"]) for block in existing_blocks]
+            previous_chapter_text = generated_chapters[-1]
+            last_no = int(existing_blocks[-1]["chapter_no"])
+            start_index = len(existing_blocks)
+            if start_index >= len(chapters):
+                print(f"[INFO] story already complete through Chapter {last_no}: {story_path}")
+                return True
+            print(f"[INFO] resuming from Chapter {last_no + 1} (last success: Chapter {last_no})")
+        else:
+            if (not non_interactive) and (not _confirm_overwrite(story_path)):
+                print("[INFO] story generation cancelled by user")
+                return False
+            story_path.write_text("", encoding="utf-8")
+
+    for idx, chapter in enumerate(chapters[start_index:], start=start_index + 1):
+        chapter_no = int(chapter["chapter_no"])
+        chapter_title = str(chapter["chapter_title"])
+        chapter_outline = str(chapter["chapter_outline"])
+        print(f"[INFO] make-story {idx}/{len(chapters)} -> Chapter {chapter_no}: {chapter_title}")
+        chapter_text = _generate_story_chapter_with_retry(
+            root=root,
+            story_id=story_id,
+            synopsis_text=synopsis_text,
+            target_chars=target_chars,
+            chapter_no=chapter_no,
+            chapter_title=chapter_title,
+            chapter_outline=chapter_outline,
+            previous_chapter_text=previous_chapter_text,
+        )
+        generated_chapters.append(chapter_text)
+        previous_chapter_text = chapter_text
+        story_path.write_text("\n\n".join(generated_chapters).strip() + "\n", encoding="utf-8")
+
+    print(f"[INFO] story saved: {story_path}")
+    return True
+
+
+def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace) -> None:
+    stories_dir = root / "stories"
+    work_dir = root / "work"
     script_path = stories_dir / f"{story_id}.txt"
     if not script_path.exists():
-        if args.create_empty_story:
-            script_path.write_text("", encoding="utf-8")
-        else:
-            raise FileNotFoundError(
-                f"입력 대본 파일이 없습니다: {script_path}\n"
-                f"1) stories/{story_id}.txt 를 만들거나\n"
-                f"2) --create-empty-story 옵션으로 빈 파일 생성 후 편집하세요."
-            )
+        raise FileNotFoundError(
+            f"입력 대본 파일이 없습니다: {script_path}\n"
+            f"먼저 --make-story 단계로 {script_path.name}를 생성하세요."
+        )
 
-    base_dir = work_dir / story_id  # 결과물은 work/<story-id>/ 아래로
+    base_dir = work_dir / story_id
 
     if args.clean_workdir:
-        # ✅ work/<story-id>/ 아래만 삭제 허용 (탈출 방지)
         work_dir_real = work_dir.resolve()
         base_dir_real = base_dir.resolve()
 
@@ -450,26 +612,20 @@ def main() -> None:
             raise RuntimeError(
                 f"--clean-workdir safety check failed: {base_dir_real} is not under {work_dir_real}"
             )
-
-        # ✅ 추가 안전: story-id가 work 자체를 가리키거나 상위가 되는 경우 방지
         if base_dir_real == work_dir_real:
             raise RuntimeError("--clean-workdir safety check failed: target is work dir itself")
 
-        # ✅ 사용자 확인: --clean-workdir가 켜졌으면 무조건 y/n 확인
-        #    (폴더가 없어도 물어봄: y면 "있으면 삭제", 없으면 "그대로 진행")
         print(f"[INFO] --clean-workdir target exists={base_dir_real.exists()}: {base_dir_real}")
-
-        # ✅ 사용자 확인: --clean-workdir가 켜졌으면 무조건 y/n 확인
-        # y면 "있으면 삭제", 없으면 "없으니 그대로 진행"
-        # n이면 삭제하지 않고 그대로 진행
-        if _confirm_clean_workdir(base_dir_real):
+        if args.non_interactive:
             if base_dir_real.exists():
                 shutil.rmtree(base_dir_real)
+        else:
+            if _confirm_clean_workdir(base_dir_real):
+                if base_dir_real.exists():
+                    shutil.rmtree(base_dir_real)
 
-    _ensure_dir(base_dir)  # story별 디렉토리 자동 생성
+    _ensure_dir(base_dir)
 
-    # 무거운 의존성은 실제 실행 직전에 import한다.
-    # 이렇게 하면 현재 환경에서 --help 검증이 가능해진다.
     from yadam.pipeline.orchestrator import Orchestrator, PipelineConfig
     from yadam.export.vrew_exporter import VrewFileExporter
     from yadam.gen.gemini_client import VertexImagenClient, GeminiFlashImageClient
@@ -482,16 +638,18 @@ def main() -> None:
         style_profile=args.style,
         input_script_path=str(script_path),
         json_name="project.json",
-        interactive=(not args.non_interactive),  # ✅ 기본 interactive
+        interactive=(not args.non_interactive),
         vrew_clip_max_chars=max(1, int(args.vrew_clip_max_chars)),
     )
 
     if args.image_api == "vertex_imagen":
         model = args.image_model.strip() or "imagen-4.0-generate-001"
         img_client = VertexImagenClient(model=model)
+        workflow_path = ""
     elif args.image_api == "gemini_flash_image":
         model = args.image_model.strip() or "gemini-2.5-flash-image"
         img_client = GeminiFlashImageClient(model=model)
+        workflow_path = ""
     else:
         model = args.image_model.strip() or "sd_xl_base_1.0.safetensors"
         default_comfy_workflow = (
@@ -523,103 +681,6 @@ def main() -> None:
 
     orch = Orchestrator(cfg, img_client=img_client, exporter=exporter)
     orch.run()
-
-
-def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
-    synopsis_dir = root / "synopsis"
-    stories_dir = root / "stories"
-    _ensure_dir(stories_dir)
-    next_no = _next_synopsis_no(root, synopsis_dir)
-    out_path = stories_dir / f"story{next_no:02d}.synopsis"
-    title_path = stories_dir / f"story{next_no:02d}.title"
-    _generate_synopsis_file(root, synopsis_input, out_path)
-    title_path.write_text(synopsis_input.strip() + "\n", encoding="utf-8")
-    print(f"[INFO] title saved: {title_path}")
-
-
-def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool) -> None:
-    stories_dir = root / "stories"
-    title_path = stories_dir / f"{story_id}.title"
-    synopsis_path = stories_dir / f"{story_id}.synopsis"
-
-    if not title_path.exists():
-        raise FileNotFoundError(
-            f"시놉시스 생성을 위한 제목 파일이 없습니다: {title_path}\n"
-            f"먼저 {title_path.name} 파일을 만들고 제목 한 줄을 넣으세요."
-        )
-
-    title_text = title_path.read_text(encoding="utf-8").strip()
-    if not title_text:
-        raise RuntimeError(f"제목 파일이 비어 있습니다: {title_path}")
-
-    if synopsis_path.exists():
-        print(f"[INFO] synopsis file already exists: {synopsis_path}")
-        if (not non_interactive) and (not _confirm_overwrite(synopsis_path)):
-            print("[INFO] synopsis generation cancelled by user")
-            return
-
-    _generate_synopsis_file(root, title_text, synopsis_path)
-
-
-def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_interactive: bool) -> None:
-    stories_dir = root / "stories"
-    synopsis_path = stories_dir / f"{story_id}.synopsis"
-    story_path = stories_dir / f"{story_id}.txt"
-
-    if not synopsis_path.exists():
-        raise FileNotFoundError(
-            f"스토리 생성을 위한 시놉시스 파일이 없습니다: {synopsis_path}\n"
-            f"먼저 `python -m yadam.cli --story-id {story_id}` 로 시놉시스를 생성하세요."
-        )
-
-    synopsis_text = synopsis_path.read_text(encoding="utf-8").strip()
-    if not synopsis_text:
-        raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
-
-    chapters = _parse_synopsis_chapters(synopsis_text)
-    generated_chapters: list[str] = []
-    previous_chapter_text = ""
-    start_index = 0
-
-    if story_path.exists():
-        print(f"[INFO] story file already exists: {story_path}")
-        existing_text = story_path.read_text(encoding="utf-8").strip()
-        existing_blocks = _parse_story_chapter_blocks(existing_text)
-        if existing_blocks:
-            generated_chapters = [str(block["text"]) for block in existing_blocks]
-            previous_chapter_text = generated_chapters[-1]
-            last_no = int(existing_blocks[-1]["chapter_no"])
-            start_index = len(existing_blocks)
-            if start_index >= len(chapters):
-                print(f"[INFO] story already complete through Chapter {last_no}: {story_path}")
-                return
-            print(f"[INFO] resuming from Chapter {last_no + 1} (last success: Chapter {last_no})")
-        else:
-            if (not non_interactive) and (not _confirm_overwrite(story_path)):
-                print("[INFO] story generation cancelled by user")
-                return
-            story_path.write_text("", encoding="utf-8")
-
-    for idx, chapter in enumerate(chapters[start_index:], start=start_index + 1):
-        chapter_no = int(chapter["chapter_no"])
-        chapter_title = str(chapter["chapter_title"])
-        chapter_outline = str(chapter["chapter_outline"])
-        print(f"[INFO] make-story {idx}/{len(chapters)} -> Chapter {chapter_no}: {chapter_title}")
-        chapter_text = _generate_story_chapter_with_retry(
-            root=root,
-            story_id=story_id,
-            synopsis_text=synopsis_text,
-            target_chars=target_chars,
-            chapter_no=chapter_no,
-            chapter_title=chapter_title,
-            chapter_outline=chapter_outline,
-            previous_chapter_text=previous_chapter_text,
-        )
-        generated_chapters.append(chapter_text)
-        previous_chapter_text = chapter_text
-        story_path.write_text("\n\n".join(generated_chapters).strip() + "\n", encoding="utf-8")
-
-    print(f"[INFO] story saved: {story_path}")
 
 
 def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> None:

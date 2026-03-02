@@ -529,7 +529,7 @@
 [2026-03-02] `--synopsis` CLI 추가로 시놉시스 단독 생성 지원
 	•	구분: 구현
 	•	변경 내용:
-	•	CLI에 `--synopsis` 옵션을 추가해 `--story-id` 없이도 시놉시스 생성만 단독 실행할 수 있도록 변경.
+	•	CLI에 제목/훅 직접 입력 옵션을 추가해 `--story-id` 없이도 새 스토리 번호로 시놉시스 생성을 시작할 수 있도록 변경.
 	•	`prompts/make_synopsis.txt`를 프롬프트 템플릿으로 읽고, 입력 문구를 LLM(`gemini-2.5-flash`)에 전달한 뒤 `stories/storyNN.synopsis` 파일로 저장.
 	•	입력 제목/훅은 `stories/storyNN.title` 파일에도 함께 저장.
 	•	파일 번호는 기존 `synopsis/story*.synopsis`, 이전 규칙인 `synopsis/storyp*.synopsis`, `stories/story*.synopsis`, 그리고 `stories/story*.txt`의 최대 번호를 기준으로 다음 값을 사용.
@@ -538,13 +538,17 @@
 	•	영향 범위:
 	•	yadam/cli.py
 	•	마이그레이션/호환:
-	•	기존 스토리 생성 경로에는 영향 없음. `--synopsis` 사용 시에만 별도 동작함.
+	•	현재 표면 옵션명은 `--title`이며, 이전 `--synopsis`는 숨김 호환 별칭으로만 유지됨.
 
 [2026-03-02] `--story-id` 기반 시놉시스 생성 흐름으로 CLI 분기 조정
 	•	구분: 구현
 	•	변경 내용:
-	•	`python -m yadam.cli --story-id story06` 실행 시 `stories/story06.title`을 읽어 `prompts/make_synopsis.txt`로 LLM 호출 후 `stories/story06.synopsis`를 생성하도록 변경.
-	•	`stories/storyNN.synopsis`가 이미 존재하면 interactive 모드에서는 덮어쓸지 `y/n`으로 확인하고, `--non-interactive` 모드에서는 확인 없이 덮어씀.
+	•	`python -m yadam.cli --story-id story06` 실행 시 기본 흐름을 interactive하게 재구성.
+	•	1) `stories/story06.title`을 읽어 `stories/story06.synopsis` 생성 -> 확인 `(Y/n, 기본 Y)`.
+	•	2) `stories/story06.synopsis`를 읽어 `stories/story06.txt` 생성 -> 확인 `(Y/n, 기본 Y)`.
+	•	3) `stories/story06.txt`를 입력으로 기존 이미지 생성 및 `.vrew` export 파이프라인 실행.
+	•	`--non-interactive` 모드에서는 위 절차를 확인 없이 처음부터 끝까지 자동 실행.
+	•	`--make_synopsis` 옵션은 `stories/storyNN.title -> stories/storyNN.synopsis` 단계만 수행.
 	•	`--make-story [500|1000]` 옵션을 추가해 `stories/storyNN.synopsis`를 입력으로 `stories/storyNN.txt`를 생성하도록 확장.
 	•	`--make-story`는 synopsis를 `N챕터: 제목` 형식으로 파싱한 뒤, 챕터별로 LLM을 순차 호출해 `storyNN.txt`에 누적 저장한다.
 	•	값을 생략하면 기본 분량은 챕터당 `500`자, `1000` 지정 시 챕터당 `1000`자 내외를 목표로 한다.
@@ -559,7 +563,7 @@
 	•	영향 범위:
 	•	yadam/cli.py, prompts/make_story.txt
 	•	마이그레이션/호환:
-	•	기존 `--story-id` 전체 파이프라인 경로는 잠시 비활성화되며, 현재는 synopsis 생성 또는 `--make-story` 대본 생성까지만 동작함.
+	•	기본 `--story-id`는 다시 전체 파이프라인을 수행하며, 단계별 단독 실행은 `--make_synopsis`, `--make-story`로 분리됨.
 
 [2026-03-02] `make_story` 분량 기준을 제목 제외 본문 기준으로 명시
 	•	구분: 프롬프트
