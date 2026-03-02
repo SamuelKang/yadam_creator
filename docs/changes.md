@@ -597,3 +597,15 @@
 	•	조선시대 음식 소품이 일본식 onigiri 형태로 잘못 일반화되는 문제를 줄이기 위함.
 	•	영향 범위:
 	•	yadam/prompts/builder.py, yadam/nlp/llm_scene_prompt.py
+
+[2026-03-02] CLI 진행 로그 및 텍스트 LLM 백오프 재시도 추가
+	•	구분: 구현
+	•	변경 내용:
+	•	`--title`, `--story-id`, `--make_synopsis`, `--make-story` 실행 시 synopsis 생성, story 생성, 이미지/.vrew 파이프라인 단계가 `[INFO] step N/M` 로그로 즉시 출력되도록 추가.
+	•	synopsis 생성 직전 `synopsis LLM request -> gemini-2.5-flash`, chapter 생성 직전 `chapter LLM request -> gemini-2.5-flash (Chapter N)` 로그를 추가.
+	•	synopsis 생성에도 최대 3회 백오프 재시도(1.5s -> 3.0s -> 6.0s)를 추가.
+	•	story chapter 생성의 기존 3회 재시도에도 같은 백오프를 추가하고, `500/502/503/504`, `INTERNAL`, `RESOURCE_EXHAUSTED`, `timeout` 등을 transient 오류로 판별하도록 보강.
+	•	변경 이유:
+	•	비대화형 실행에서 멈춘 것처럼 보이는 구간을 줄이고, Gemini API의 일시적 서버 오류가 바로 전체 실패로 이어지지 않게 하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py

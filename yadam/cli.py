@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 
@@ -78,6 +79,31 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
     tmp_path = path.with_name(f".{path.name}.tmp")
     tmp_path.write_text(text, encoding=encoding)
     tmp_path.replace(path)
+
+
+def _is_transient_llm_error(err: Exception) -> bool:
+    text = f"{type(err).__name__}: {err}".lower()
+    transient_markers = (
+        "500",
+        "502",
+        "503",
+        "504",
+        "internal",
+        "unavailable",
+        "resource_exhausted",
+        "rate limit",
+        "quota",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "temporarily unavailable",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _llm_retry_delay_sec(attempt: int) -> float:
+    delays = {1: 1.5, 2: 3.0, 3: 6.0}
+    return delays.get(attempt, 10.0)
 
 
 def _build_make_story_automation_override(
@@ -308,9 +334,40 @@ def _generate_story_chapter_with_retry(
         except Exception as err:
             last_err = err
             print(f"[WARN] Chapter {chapter_no} generation failed ({attempt}/{max_attempts}): {err}")
+            if attempt < max_attempts and _is_transient_llm_error(err):
+                delay = _llm_retry_delay_sec(attempt)
+                print(f"[INFO] transient LLM error, retrying Chapter {chapter_no} in {delay:.1f}s")
+                time.sleep(delay)
     assert last_err is not None
     raise RuntimeError(
         f"Chapter {chapter_no} 생성이 {max_attempts}회 연속 실패했습니다. 다음 실행 시 이 챕터부터 재개합니다."
+    ) from last_err
+
+
+def _generate_synopsis_file_with_retry(
+    root: Path,
+    synopsis_input: str,
+    out_path: Path,
+    *,
+    max_attempts: int = 3,
+) -> None:
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if attempt > 1:
+                print(f"[INFO] synopsis retry {attempt}/{max_attempts}")
+            _generate_synopsis_file(root, synopsis_input, out_path)
+            return
+        except Exception as err:
+            last_err = err
+            print(f"[WARN] synopsis generation failed ({attempt}/{max_attempts}): {err}")
+            if attempt < max_attempts and _is_transient_llm_error(err):
+                delay = _llm_retry_delay_sec(attempt)
+                print(f"[INFO] transient LLM error, retrying synopsis in {delay:.1f}s")
+                time.sleep(delay)
+    assert last_err is not None
+    raise RuntimeError(
+        f"시놉시스 생성이 {max_attempts}회 연속 실패했습니다."
     ) from last_err
 
 EXAMPLES_TEXT = "\n".join([
@@ -446,9 +503,11 @@ def main() -> None:
 
     if synopsis_input:
         story_id = _run_synopsis_mode(root, synopsis_input)
+        print(f"[INFO] step 1/3: generating synopsis for {story_id}")
         if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
             return
         if args.non_interactive:
+            print(f"[INFO] step 2/3: generating story for {story_id}")
             if not _run_make_story_mode(
                 root,
                 story_id,
@@ -456,6 +515,7 @@ def main() -> None:
                 non_interactive=True,
             ):
                 return
+            print(f"[INFO] step 3/3: running image and .vrew pipeline for {story_id}")
             _run_full_pipeline_mode(root, story_id, args)
         return
 
@@ -466,10 +526,12 @@ def main() -> None:
         raise ValueError(f"invalid story-id: {story_id}")
 
     if args.make_synopsis or args.make_sysnopsis:
+        print(f"[INFO] step 1/1: generating synopsis for {story_id}")
         _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
         return
 
     if args.make_story:
+        print(f"[INFO] step 1/1: generating story for {story_id}")
         _run_make_story_mode(
             root,
             story_id,
@@ -478,6 +540,7 @@ def main() -> None:
         )
         return
 
+    print(f"[INFO] step 1/3: generating synopsis for {story_id}")
     if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
         return
     if (not args.non_interactive) and (
@@ -486,6 +549,7 @@ def main() -> None:
         print("[INFO] stopped after synopsis generation")
         return
 
+    print(f"[INFO] step 2/3: generating story for {story_id}")
     if not _run_make_story_mode(
         root,
         story_id,
@@ -499,6 +563,7 @@ def main() -> None:
         print("[INFO] stopped after story generation")
         return
 
+    print(f"[INFO] step 3/3: running image and .vrew pipeline for {story_id}")
     _run_full_pipeline_mode(root, story_id, args)
 
 
@@ -544,7 +609,8 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
             print("[INFO] synopsis generation cancelled by user")
             return False
 
-    _generate_synopsis_file(root, title_text, synopsis_path)
+    print(f"[INFO] generating synopsis from title: {title_path.name}")
+    _generate_synopsis_file_with_retry(root, title_text, synopsis_path)
     _atomic_write_text(title_hash_path, title_hash + "\n")
     return True
 
@@ -743,6 +809,7 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
             timeout_sec=max(10, int(args.comfy_timeout_sec)),
         )
 
+    print(f"[INFO] starting image and .vrew pipeline for {story_id}")
     print(f"[INFO] image_api={args.image_api}, image_model={model}")
     if args.image_api == "comfyui":
         print(f"[INFO] comfy_url={args.comfy_url.strip()}, comfy_workflow={workflow_path}")
@@ -781,6 +848,7 @@ def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> 
     )
 
     client = genai.Client()
+    print("[INFO] synopsis LLM request -> gemini-2.5-flash")
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
@@ -827,6 +895,7 @@ def _generate_story_chapter(
     )
 
     client = genai.Client()
+    print(f"[INFO] chapter LLM request -> gemini-2.5-flash (Chapter {chapter_no})")
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
