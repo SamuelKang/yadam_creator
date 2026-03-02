@@ -555,6 +555,16 @@
 	•	변경 이유:
 	•	작업 흐름을 `title -> synopsis -> story -> images`로 분리해 단계별 검토와 재실행을 단순화하고, Gemini의 긴 출력 한계를 챕터 단위 생성으로 우회하기 위함.
 	•	영향 범위:
-	•	yadam/cli.py
+	•	yadam/cli.py, prompts/make_story.txt
 	•	마이그레이션/호환:
 	•	기존 `--story-id` 전체 파이프라인 경로는 잠시 비활성화되며, 현재는 synopsis 생성 또는 `--make-story` 대본 생성까지만 동작함.
+
+[2026-03-02] `make_story` 분량 기준을 제목 제외 본문 기준으로 명시
+	•	구분: 프롬프트
+	•	변경 내용:
+	•	`prompts/make_story.txt`에 500자/1,000자 분량 규정은 `Chapter N : ...` 제목 라인을 제외한 본문 기준이라는 점을 명시.
+	•	글자 수 정의, 30분/1시간 분량 설명, 실전 출력 규칙에 동일 기준을 반영.
+	•	변경 이유:
+	•	자동 생성된 chapter의 제목 길이에 따라 목표 분량 판정이 흔들리지 않도록 하기 위함.
+	•	영향 범위:
+	•	prompts/make_story.txt
