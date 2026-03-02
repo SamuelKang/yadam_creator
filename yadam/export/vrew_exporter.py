@@ -115,6 +115,7 @@ class VrewFileExporter(VrewExporter):
                 audio_media_id = str(uuid4())
                 audio_name = self._audio_name_from_text(chunk_text, sid, chunk_idx)
                 tts_text = self._normalize_tts_text(chunk_text)
+                caption_text = self._balance_caption_lines(chunk_text)
                 if not self._should_export_tts_chunk(chunk_text, tts_text):
                     continue
                 words, duration = self._build_words(tts_text, audio_media_id)
@@ -158,7 +159,7 @@ class VrewFileExporter(VrewExporter):
                     "words": words,
                     "captionMode": "MANUAL",
                     "captions": [
-                        {"text": [{"insert": chunk_text + "\n"}]},
+                        {"text": [{"insert": caption_text + "\n"}]},
                         {"text": [{"insert": "\n"}]},
                     ],
                     "assetIds": [asset_id],
@@ -745,6 +746,49 @@ class VrewFileExporter(VrewExporter):
         if fallback:
             return fallback
         return ""
+
+    def _balance_caption_lines(self, text: str) -> str:
+        s = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not s or "\n" in s or len(s) < 18:
+            return s
+
+        words = s.split()
+        if len(words) < 2:
+            return s
+
+        best_lines = [s]
+        best_score = (float("inf"), float("inf"))
+
+        def score(lines: List[str]) -> Tuple[int, int]:
+            lengths = [len(line) for line in lines]
+            return (max(lengths), max(lengths) - min(lengths))
+
+        def join_words(parts: List[List[str]]) -> List[str]:
+            return [" ".join(part).strip() for part in parts if part]
+
+        # 2-line candidates
+        for i in range(1, len(words)):
+            lines = join_words([words[:i], words[i:]])
+            if len(lines) != 2:
+                continue
+            sc = score(lines)
+            if sc < best_score:
+                best_score = sc
+                best_lines = lines
+
+        # 3-line candidates for longer captions only
+        if len(s) >= 36 and len(words) >= 3:
+            for i in range(1, len(words) - 1):
+                for j in range(i + 1, len(words)):
+                    lines = join_words([words[:i], words[i:j], words[j:]])
+                    if len(lines) != 3:
+                        continue
+                    sc = score(lines)
+                    if sc < best_score:
+                        best_score = sc
+                        best_lines = lines
+
+        return "\n".join(best_lines)
 
     def _soften_tts_sentence_breaks(self, text: str) -> str:
         s = re.sub(r"\s+", " ", str(text or "")).strip()
