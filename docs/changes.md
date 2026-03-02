@@ -587,3 +587,13 @@
 	•	자동 생성된 chapter의 제목 길이에 따라 목표 분량 판정이 흔들리지 않도록 하기 위함.
 	•	영향 범위:
 	•	prompts/make_story.txt
+
+[2026-03-02] `주먹밥` 소품을 조선식 둥근 밥덩이로 고정
+	•	구분: 프롬프트
+	•	변경 내용:
+	•	scene text에 `주먹밥`이 있으면 prompt builder에서 조선식 손주먹밥 소품 고증 문구를 추가.
+	•	LLM scene prompt 규칙에 `주먹밥`은 일본식 삼각 오니기리가 아니라 둥글고 투박한 조선식 밥덩이, 김 띠 없음, 헝겊/소반/손 위의 소박한 형태로 묘사하도록 명시.
+	•	변경 이유:
+	•	조선시대 음식 소품이 일본식 onigiri 형태로 잘못 일반화되는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/prompts/builder.py, yadam/nlp/llm_scene_prompt.py

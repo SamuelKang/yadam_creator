@@ -65,6 +65,10 @@ def build_scene_content(scene_text: str, character_lines: List[str], place_line:
     parts.append("형식: 단일 장면 일러스트(한 컷). 만화 패널/컷 분할/말풍선/자막/캡션/간판 글씨 없음.")
     parts.append("주의: 화면 여백에 글자가 들어갈 공간을 만들지 말 것. 텍스트/로고/워터마크 없음.")
     parts.append("추가 금지: 만화 페이지 레이아웃, 상단/하단 내레이션 박스, 패널 테두리, 말풍선 테두리, 텍스트 박스.")
+    if "주먹밥" in (scene_text or ""):
+        parts.append(
+            "소품 고증: 주먹밥은 일본식 삼각 오니기리가 아니라 조선식 손으로 쥔 둥글고 투박한 밥덩이로 묘사, 김 띠 없음."
+        )
     return "\n".join(parts)
 
 
