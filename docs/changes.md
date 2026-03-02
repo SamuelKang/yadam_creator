@@ -513,3 +513,15 @@
 	•	안윤처럼 하나의 캐릭터가 `노비/무관` 두 상태를 가질 때 장면과 캐릭터 시트 양쪽에서 복식이 뒤섞여 일관성이 깨지는 문제를 줄이기 위함.
 	•	영향 범위:
 	•	yadam/pipeline/orchestrator.py, yadam/prompts/builder.py
+
+[2026-03-02] .vrew clip 따옴표 후처리 보강으로 odd quote clip 제거
+	•	구분: 구현
+	•	변경 내용:
+	•	긴 대사를 여러 clip으로 분할할 때 각 clip이 독립적으로 따옴표를 갖도록 조정.
+	•	서술문 앞에 잘못 붙은 stray quote와 이중 따옴표(`""...`)를 exporter 후처리에서 제거.
+	•	변경 이유:
+	•	`.vrew` 내부 captions에서 따옴표 개수가 홀수로 남아 화면 텍스트가 어색하게 보이던 clip들을 제거하기 위함.
+	•	영향 범위:
+	•	yadam/export/vrew_exporter.py
+	•	마이그레이션/호환:
+	•	기존 `.vrew`에는 반영되지 않으므로 재-export가 필요함.

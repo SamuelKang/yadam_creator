@@ -403,16 +403,11 @@ class VrewFileExporter(VrewExporter):
         sentence_units = self._split_sentence_units(inner)
         if len(sentence_units) > 1:
             out: List[str] = []
-            for idx, part in enumerate(sentence_units):
-                p = part.strip()
+            for part in sentence_units:
+                p = self._strip_edge_quotes(part)
                 if not p:
                     continue
-                if idx == 0:
-                    out.append(f"\"{p}")
-                elif idx == len(sentence_units) - 1:
-                    out.append(f"{p}\"")
-                else:
-                    out.append(p)
+                out.append(f"\"{p}\"")
             return out
 
         parts = self._merge_terminal_tail(self._hard_split_by_chars(inner, max_chars), soft_max_chars)
@@ -422,16 +417,11 @@ class VrewFileExporter(VrewExporter):
             return [f"\"{parts[0]}\""]
 
         out: List[str] = []
-        for idx, part in enumerate(parts):
-            p = part.strip()
+        for part in parts:
+            p = self._strip_edge_quotes(part)
             if not p:
                 continue
-            if idx == 0:
-                out.append(f"\"{p}")
-            elif idx == len(parts) - 1:
-                out.append(f"{p}\"")
-            else:
-                out.append(p)
+            out.append(f"\"{p}\"")
         return out
 
     def _join_clip_units(self, left: str, right: str) -> str:
@@ -502,6 +492,7 @@ class VrewFileExporter(VrewExporter):
 
         cleaned = [self._normalize_wrapped_dialogue(s.strip()) for s in out if s and s.strip()]
         cleaned = [s for s in cleaned if not re.fullmatch(r'["“”‘’]+', s)]
+        cleaned = [self._strip_leading_quote_from_narration(s) for s in cleaned]
         merged: List[str] = []
         for item in cleaned:
             s = item.strip()
@@ -598,6 +589,18 @@ class VrewFileExporter(VrewExporter):
         if self._looks_like_quoted_narration(inner):
             return inner
         return f"\"{inner}\""
+
+    def _strip_leading_quote_from_narration(self, text: str) -> str:
+        s = (text or "").strip()
+        if not s.startswith("\"") or s.endswith("\""):
+            return s
+        body = s[1:].strip()
+        if self._looks_like_quoted_narration(body):
+            return body
+        return s
+
+    def _strip_edge_quotes(self, text: str) -> str:
+        return re.sub(r'^["“”]+|["“”]+$', "", (text or "").strip()).strip()
 
     def _normalize_display_text(self, text: str) -> str:
         s = str(text or "")
