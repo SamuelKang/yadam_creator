@@ -810,7 +810,7 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
         )
 
     print(f"[INFO] starting image and .vrew pipeline for {story_id}")
-    print(f"[INFO] image_api={args.image_api}, image_model={model}")
+    print(f"[INFO] image_api={args.image_api}, image_model={model}, image_client={img_client.__class__.__name__}")
     if args.image_api == "comfyui":
         print(f"[INFO] comfy_url={args.comfy_url.strip()}, comfy_workflow={workflow_path}")
     exporter = VrewFileExporter()

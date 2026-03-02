@@ -38,21 +38,36 @@ class VertexImagenClient(ImageClient):
         try:
             aspect = req.aspect_ratio or "16:9"
 
-            cfg = types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio=aspect,
-                include_rai_reason=True,
-                include_safety_attributes=True,
-                output_mime_type="image/jpeg",
-                # Vertex에서만 쓸 거면 유지, Developer면 분기 필요
-                negative_prompt="문자, 글자, 문장, 자막, 말풍선, 대사, 캡션, 표지 글씨, 패널 텍스트, 워터마크, 로고, 간판 글씨, 영어 문장",
-            )
+            def _make_cfg(include_negative_prompt: bool) -> types.GenerateImagesConfig:
+                kwargs = dict(
+                    number_of_images=1,
+                    aspect_ratio=aspect,
+                    include_rai_reason=True,
+                    include_safety_attributes=True,
+                    output_mime_type="image/jpeg",
+                )
+                if include_negative_prompt:
+                    kwargs["negative_prompt"] = (
+                        "문자, 글자, 문장, 자막, 말풍선, 대사, 캡션, 표지 글씨, 패널 텍스트, "
+                        "워터마크, 로고, 간판 글씨, 영어 문장"
+                    )
+                return types.GenerateImagesConfig(**kwargs)
 
-            resp = self.client.models.generate_images(
-                model=self.model,
-                prompt=req.prompt,
-                config=cfg,
-            )
+            try:
+                resp = self.client.models.generate_images(
+                    model=self.model,
+                    prompt=req.prompt,
+                    config=_make_cfg(include_negative_prompt=True),
+                )
+            except Exception as e:
+                msg = str(e)
+                if "negative_prompt parameter is not supported" not in msg.lower():
+                    raise
+                resp = self.client.models.generate_images(
+                    model=self.model,
+                    prompt=req.prompt,
+                    config=_make_cfg(include_negative_prompt=False),
+                )
 
             gen = getattr(resp, "generated_images", None) or []
             if not gen:

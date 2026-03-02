@@ -609,3 +609,14 @@
 	•	비대화형 실행에서 멈춘 것처럼 보이는 구간을 줄이고, Gemini API의 일시적 서버 오류가 바로 전체 실패로 이어지지 않게 하기 위함.
 	•	영향 범위:
 	•	yadam/cli.py
+
+[2026-03-02] Gemini 이미지 경로 호환성 및 진단 로그 보강
+	•	구분: 구현
+	•	변경 내용:
+	•	이미지 파이프라인 시작 시 `image_api`, `image_model`과 함께 실제 선택된 `image_client` 클래스명을 출력하도록 추가.
+	•	`VertexImagenClient`가 Gemini API 환경에서 `negative_prompt parameter is not supported in Gemini API` 오류를 반환하면, 동일 요청을 `negative_prompt` 없이 한 번 더 시도하도록 보강.
+	•	기존 실패 scene을 재시도할 수 있도록 `story07` 초반 clip error 상태를 재초기화.
+	•	변경 이유:
+	•	Gemini API 사용 시 Vertex용 `negative_prompt` 설정이 호환성 오류를 내는 경우를 완화하고, 현재 어떤 이미지 클라이언트가 실제로 사용되는지 로그에서 바로 확인할 수 있게 하기 위함.
+	•	영향 범위:
+	•	yadam/gen/gemini_client.py, yadam/cli.py
