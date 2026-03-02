@@ -69,7 +69,7 @@ def main() -> None:
     ap.add_argument(
         "--synopsis",
         default="",
-        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 synopsis/storypNN.synopsis 파일을 생성",
+        help="시놉시스 생성용 입력 문구. 지정 시 prompts/make_synopsis.txt를 사용해 synopsis/storyNN.synopsis 파일을 생성",
     )
     ap.add_argument("--project-root", default=".", help="프로젝트 루트(기본: 현재 폴더)")
     ap.add_argument("--profiles", default="yadam/config/default_profiles.yaml")
@@ -260,7 +260,7 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
         raise RuntimeError(f"시놉시스 프롬프트가 비어 있습니다: {prompt_path}")
 
     next_no = _next_synopsis_no(root, synopsis_dir)
-    out_path = synopsis_dir / f"storyp{next_no:02d}.synopsis"
+    out_path = synopsis_dir / f"story{next_no:02d}.synopsis"
 
     payload = {
         "input_title_or_hook": synopsis_input,
@@ -299,11 +299,12 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> None:
 
 def _next_synopsis_no(root: Path, synopsis_dir: Path) -> int:
     nums = []
-    for p in synopsis_dir.glob("storyp*.synopsis"):
-        stem = p.stem
-        digits = "".join(ch for ch in stem if ch.isdigit())
-        if digits:
-            nums.append(int(digits))
+    for pattern in ("story*.synopsis", "storyp*.synopsis"):
+        for p in synopsis_dir.glob(pattern):
+            stem = p.stem
+            digits = "".join(ch for ch in stem if ch.isdigit())
+            if digits:
+                nums.append(int(digits))
 
     stories_dir = root / "stories"
     if stories_dir.exists():
