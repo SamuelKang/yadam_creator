@@ -113,6 +113,9 @@ class GeminiFlashImageClient(ImageClient):
                 ],
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(
+                        aspect_ratio=req.aspect_ratio or "16:9",
+                    ),
                 ),
             )
 

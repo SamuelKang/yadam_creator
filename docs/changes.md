@@ -631,3 +631,13 @@
 	•	Gemini 이미지 경로에서 긴 제약문보다 장면 핵심 연출이 우선되도록 하고, 드문 규칙이 모든 scene에 반복 삽입되며 토큰을 늘리는 문제를 줄이기 위함.
 	•	영향 범위:
 	•	yadam/nlp/llm_scene_prompt.py
+
+[2026-03-02] Gemini image API에 실제 16:9 aspect ratio 설정 전달
+	•	구분: 구현
+	•	변경 내용:
+	•	`GeminiFlashImageClient`가 `generate_content(..., image_config=ImageConfig(aspect_ratio=...))`를 사용하도록 변경.
+	•	기존의 텍스트 힌트 `[output constraint] aspect ratio: 16:9`와 별도로 SDK의 실제 이미지 설정값으로 `aspect_ratio`를 전달.
+	•	변경 이유:
+	•	Gemini 이미지 경로에서도 16:9 비율을 단순 프롬프트 힌트가 아니라 API 설정으로 강제하기 위함.
+	•	영향 범위:
+	•	yadam/gen/gemini_client.py
