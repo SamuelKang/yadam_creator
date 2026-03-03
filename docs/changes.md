@@ -641,3 +641,23 @@
 	•	Gemini 이미지 경로에서도 16:9 비율을 단순 프롬프트 힌트가 아니라 API 설정으로 강제하기 위함.
 	•	영향 범위:
 	•	yadam/gen/gemini_client.py
+
+[2026-03-03] synopsis Markdown 헤더를 챕터 형식으로 정규화
+	•	구분: 구현
+	•	변경 내용:
+	•	`cli.py`의 synopsis 정규화/파서가 `## ...` 제목 줄과 `**1챕터: 제목**` 같은 Markdown 헤더를 정리하고, 최종적으로 `N챕터: 제목` 형식으로 인식하도록 보강.
+	•	기존 plain text 형식뿐 아니라 bold/heading 장식이 포함된 synopsis도 그대로 story 생성 단계로 넘길 수 있게 함.
+	•	변경 이유:
+	•	Gemini가 synopsis를 Markdown 스타일로 반환해도 후속 `--make-story` 단계가 `N챕터: 제목` 형식을 안정적으로 파싱하도록 하기 위함.
+	•	영향 범위:
+	•	yadam/cli.py
+
+[2026-03-03] scene prompt에서 직접 대사/인용문 사용 금지
+	•	구분: 프롬프트
+	•	변경 내용:
+	•	`llm_scene_prompt.py` 공통 규칙에 직접 대사와 인용부호 사용 금지를 추가.
+	•	`shouting "..."`, `saying "..."` 같은 직접 발화문 대신 `mouth open in a forceful shout`, `appears to be announcing his authority`처럼 입 모양, 표정, 제스처 중심의 행동 묘사를 사용하도록 지시.
+	•	변경 이유:
+	•	scene prompt 안의 직접 대사/인용부호가 Gemini 이미지에서 말풍선, 글자, lettering을 유도하는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py

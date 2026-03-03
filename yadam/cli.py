@@ -174,7 +174,7 @@ def _build_make_story_prompt(
 def _parse_synopsis_chapters(synopsis_text: str) -> list[dict[str, str | int]]:
     lines = synopsis_text.splitlines()
     chapter_starts: list[tuple[int, int, str]] = []
-    pattern = re.compile(r"^\s*(\d+)\s*챕터\s*[:：]\s*(.+?)\s*$")
+    pattern = re.compile(r"^\s*(?:\*\*)?(\d+)\s*챕터\s*[:：]\s*(.+?)(?:\*\*)?\s*$")
     for idx, line in enumerate(lines):
         m = pattern.match(line)
         if m:
@@ -213,10 +213,15 @@ def _sanitize_synopsis_output(text: str) -> str:
 
     normalized: list[str] = []
     chapter_pattern = re.compile(
-        r"^\s*(?:Chapter\s*)?(\d+)\s*(?:챕터)?\s*[:：.\-]\s*(.+?)\s*$",
+        r"^\s*(?:#+\s*)?(?:\*\*)?(?:Chapter\s*)?(\d+)\s*(?:챕터)?\s*[:：.\-]\s*(.+?)(?:\*\*)?\s*$",
         re.IGNORECASE,
     )
     for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\s*#+\s+", stripped) and not re.search(r"\d+\s*챕터", stripped):
+            continue
+        if stripped.startswith("**") and stripped.endswith("**") and len(stripped) >= 4:
+            line = stripped[2:-2].strip()
         m = chapter_pattern.match(line)
         if m:
             normalized.append(f"{int(m.group(1))}챕터: {m.group(2).strip()}")

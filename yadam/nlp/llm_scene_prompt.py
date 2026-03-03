@@ -88,6 +88,8 @@ class LLMScenePromptBuilder:
             "장면 핵심 시각 정보만 남긴다: 주인공 1~2명, 핵심 행동 1개, 배경 1개, 감정/분위기 1개. 장황한 boilerplate, 설명문, 중복 수식은 줄인다.",
             "같은 인물(name/variant)은 장면 간 외형 일관성을 유지한다(성별/연령대/얼굴 인상/헤어/복식 핵심 앵커 유지). 인물 입력에 없는 새 헤어스타일/머리장식/복식 컨셉을 임의로 추가하지 않는다.",
             "대본 문장을 그대로 복사하지 말고, 장면 묘사로 재구성한다. 시대지시가 있으면 조선시대 의복/소품/건축/분위기를 유지한다.",
+            "직접 대사나 인용부호(\"...\", '...')를 prompt에 쓰지 않는다. 등장인물의 말은 입 모양, 손짓, 표정, 긴장감, 권위적인 태도 같은 시각적 행동으로만 번역한다.",
+            "shouting \"...\" 또는 saying \"...\" 같은 직접 발화문 대신 mouth open in a forceful shout, appears to be announcing his authority, urgent expression, lips parted as if calling out 같은 행동 묘사를 사용한다.",
             "반드시 2D Korean webtoon/manhwa rendering으로 작성한다: ink lineart, full-color cel shading, bold outlines, simplified surfaces, comic-style shading.",
             "사진/실사/필름스틸/DSLR/렌즈/보케/심도(DOF)/blur 같은 촬영 효과 표현은 피하고, 필요하면 배경 단순화, 실루엣 처리, 명암 대비, 전경 프레이밍으로 치환한다.",
             "대본의 비유/은유는 초현실 변형이 아니라 자세/행동/표정으로 번역한다. 형식은 단일 장면 일러스트(한 컷), 16:9, text/speech bubbles/captions/watermarks/logos 없음.",
