@@ -671,3 +671,23 @@
 	•	대사 생성 시 호칭은 낮춤인데 종결은 존댓말인 부자연스러운 문장을 줄이고, 인물 관계에 맞는 화법 일관성을 확보하기 위함.
 	•	영향 범위:
 	•	prompts/make_story.txt
+
+[2026-03-03] Gemini clip 이미지에 캐릭터 reference image 첨부
+	•	구분: 구현
+	•	변경 내용:
+	•	이미지 요청 객체에 `reference_image_paths`를 추가하고, clip 생성 시 scene의 핵심 캐릭터 1~2명의 캐릭터 이미지를 함께 전달하도록 변경.
+	•	`GeminiFlashImageClient`는 reference image를 실제 `parts`로 첨부하고, 동일한 얼굴/헤어/복식 실루엣과 core identity anchors를 유지하라는 제약문을 prompt에 추가.
+	•	변경 이유:
+	•	Gemini 이미지 생성에서 텍스트 continuity lock만으로 부족했던 인물 일관성을 실제 캐릭터 reference image 기반으로 보강하기 위함.
+	•	영향 범위:
+	•	yadam/gen/image_client.py, yadam/gen/image_tasks.py, yadam/gen/gemini_client.py, yadam/pipeline/orchestrator.py
+
+[2026-03-03] 조선 주거 실내의 온돌/아궁이 고증 규칙 추가
+	•	구분: 프롬프트
+	•	변경 내용:
+	•	`llm_scene_prompt.py`에 조선시대 주거 실내는 온돌 구조를 우선하고, 일반 생활방 안에 노출된 실내 화덕/벽난로를 만들지 않도록 규칙을 추가.
+	•	아궁이는 부엌 쪽 난방 구조나 식은 재, 구들 온기 같은 간접 표현으로 번역하도록 유도.
+	•	변경 이유:
+	•	실내 생활방 장면에서 현대식 벽난로나 방 안 노출 아궁이처럼 잘못된 구조가 생성되는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py

@@ -37,6 +37,7 @@ def generate_with_fallback(
     retry: RetryPolicy,
     meta: Dict[str, Any],
     aspect_ratio: Optional[str] = None,
+    reference_image_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     - 성공하면 out_ok_path 저장 + out_error_path 삭제(있으면)
@@ -68,7 +69,11 @@ def generate_with_fallback(
         })
 
         try:
-            req = ImageGenRequest(prompt=prompt, aspect_ratio=aspect_ratio)
+            req = ImageGenRequest(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                reference_image_paths=tuple(reference_image_paths or []),
+            )
             resp = client.generate(req)
 
             if not resp.image_bytes:

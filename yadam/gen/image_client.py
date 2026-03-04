@@ -2,7 +2,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from yadam.core.errors import GenError
 
@@ -14,6 +14,7 @@ class ImageGenRequest:
     height: int = 720
     seed: Optional[int] = None
     aspect_ratio: Optional[str] = None   # ✅ 추가 (예: "16:9", "3:4", "1:1")ㄴ
+    reference_image_paths: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

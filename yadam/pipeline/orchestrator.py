@@ -1317,6 +1317,42 @@ class Orchestrator:
                 return prompt
 
             print(f"[6/7] clips: total={s_total}")
+
+            def _scene_reference_image_paths(s_obj: Dict[str, Any]) -> List[str]:
+                refs: List[str] = []
+                char_ids2 = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
+                selected = self._select_scene_character_ids(
+                    str(s_obj.get("text", "")),
+                    char_ids2,
+                    char_map,
+                    limit=2,
+                )
+                ci2 = s_obj.get("character_instances", [])
+                inst_map2: Dict[str, str] = {}
+                if isinstance(ci2, list):
+                    for it in ci2:
+                        if isinstance(it, dict) and isinstance(it.get("char_id"), str):
+                            inst_map2[str(it["char_id"])] = str(it.get("variant") or "")
+
+                for cid3 in selected:
+                    cobj2 = char_map.get(cid3)
+                    if not isinstance(cobj2, dict):
+                        continue
+                    variant2 = inst_map2.get(cid3, "")
+                    img_path = ""
+                    images = cobj2.get("images")
+                    if variant2 and isinstance(images, dict):
+                        vmeta = images.get(variant2)
+                        if isinstance(vmeta, dict):
+                            img_path = str(vmeta.get("path") or "")
+                    if not img_path:
+                        img_meta2 = cobj2.get("image")
+                        if isinstance(img_meta2, dict):
+                            img_path = str(img_meta2.get("path") or "")
+                    if img_path and Path(img_path).exists():
+                        refs.append(img_path)
+                return refs[:2]
+
             for s in scenes_list:
                 s_done += 1
                 img_meta = s.get("image") if isinstance(s.get("image"), dict) else _default_image_meta()
@@ -1405,6 +1441,7 @@ class Orchestrator:
 
                 img_meta["prompt_original"] = img_meta.get("prompt_original") or prompt[:500]
                 img_meta["prompt_used"] = prompt
+                ref_paths = _scene_reference_image_paths(s)
 
                 t0 = time.time()
                 s["image"] = generate_with_fallback(
@@ -1415,6 +1452,7 @@ class Orchestrator:
                     retry=retry,
                     meta=img_meta,
                     aspect_ratio="16:9",
+                    reference_image_paths=ref_paths,
                 )
                 dt = time.time() - t0
                 s_gen_time_sum += dt
@@ -1468,6 +1506,7 @@ class Orchestrator:
                                 retry=retry,
                                 meta=meta_after,
                                 aspect_ratio="16:9",
+                                reference_image_paths=ref_paths,
                             )
                             dt2 = time.time() - t1
                             s_gen_time_sum += dt2
@@ -1524,6 +1563,7 @@ class Orchestrator:
                                 retry=retry,
                                 meta=meta_after2,
                                 aspect_ratio="16:9",
+                                reference_image_paths=ref_paths,
                             )
                             dt3 = time.time() - t2
                             s_gen_time_sum += dt3

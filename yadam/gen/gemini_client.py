@@ -1,5 +1,6 @@
 # yadam/gen/gemini_client.py
 import base64
+from pathlib import Path
 from google import genai
 from google.genai import types
 from yadam.gen.image_client import ImageClient, ImageGenRequest, ImageGenResponse
@@ -26,6 +27,17 @@ def _to_bytes(data: object) -> bytes:
         # 일부 응답은 base64 문자열일 수 있으므로 방어적으로 디코딩한다.
         return base64.b64decode(data)
     return b""
+
+
+def _guess_mime(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/jpeg"
 
 
 class VertexImagenClient(ImageClient):
@@ -102,13 +114,33 @@ class GeminiFlashImageClient(ImageClient):
             prompt = req.prompt
             if req.aspect_ratio:
                 prompt += f"\n\n[output constraint] aspect ratio: {req.aspect_ratio}"
+            ref_paths = []
+            for raw in req.reference_image_paths[:2]:
+                p = Path(raw)
+                if p.exists() and p.is_file():
+                    ref_paths.append(p)
+            if ref_paths:
+                prompt += (
+                    "\n\n[reference constraint] Match the same face, hairstyle, clothing silhouette, "
+                    "and core identity anchors from the attached character reference image(s)."
+                )
+
+            parts = []
+            for p in ref_paths:
+                parts.append(
+                    types.Part.from_bytes(
+                        data=p.read_bytes(),
+                        mime_type=_guess_mime(p),
+                    )
+                )
+            parts.append(types.Part(text=prompt))
 
             resp = self.client.models.generate_content(
                 model=self.model,
                 contents=[
                     types.Content(
                         role="user",
-                        parts=[types.Part(text=prompt)],
+                        parts=parts,
                     )
                 ],
                 config=types.GenerateContentConfig(
