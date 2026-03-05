@@ -127,8 +127,10 @@ class LLMEntityExtractor:
             "규칙기반_인물후보": seed_char_candidates,
             "규칙기반_장소후보": seed_place_candidates,
             "요구사항": [
-                "인물 name_canonical은 사람이 읽을 수 있는 대표 명칭(예: 이도령, 윤씨부인, 주지스님 등).",
-                "aliases에는 대본에서 확인된 다른 표기만 넣는다.",
+                "인물 name_canonical은 사람이 읽을 수 있는 대표 명칭(예: 설화, 강무, 도윤, 김도령). 단순 역할명(아씨, 도령, 마님, 아들, 딸, 어머니)만으로 끝내지 말고, 대본에 실명이 있으면 실명을 canonical로 삼는다.",
+                "같은 인물이 실명과 역할명/호칭으로 함께 등장하면 하나의 canonical 인물로 합치고, 역할명/호칭은 aliases로 보낸다.",
+                "실명이 전혀 없을 때만 역할명(예: 노승, 사또, 할멈)을 canonical로 사용한다.",
+                "aliases에는 대본에서 확인된 다른 표기만 넣는다. 존칭/호칭/관계명은 가능한 alias로 흡수한다.",
                 "장면 태깅(scene_tags)에서 characters/places는 반드시 name_canonical을 사용한다.",
                 "불확실하면 notes에 짧게 남긴다.",
 
@@ -145,6 +147,7 @@ class LLMEntityExtractor:
                 "각 인물에 대해 wardrobe_anchors를 3~6개 제시한다(복식/소품 중심, 짧게).",
                 "우선순위: context가 '궁중'이면 social_class/wealth_level보다 궁중 복식 규격이 우선이다(예: 궁중 문신/무관 관복/관모, 궁녀 당의/치마 등).",
                 "과장 금지: 금/보석 과다, 판타지 의상, 과도한 장식은 피한다. 시대감 유지.",
+                "성장 서사가 있는 인물은 아예 다른 캐릭터로 쪼개지 말고 하나의 canonical 인물 아래 variants(예: 유아, 아동, 청년)로 유지한다.",
             ],
         }
 

@@ -712,3 +712,25 @@
 	•	남매 장면에서 아이 수가 과장되거나 성별이 섞이고, 실내 장면이 서양식 벽난로로 잘못 해석되는 문제를 줄이기 위함.
 	•	영향 범위:
 	•	yadam/nlp/llm_scene_prompt.py
+
+[2026-03-04] 인물/장소 태깅을 alias 기반으로 보강하고 scene backfill 추가
+	•	구분: 구현
+	•	변경 내용:
+	•	`entity_extract.py`의 fallback `Character` 구조에 `aliases` 필드를 추가해 이름 변형을 다룰 수 있게 확장.
+	•	`tagger.py` 기본 태깅이 canonical name만 보던 방식에서 canonical+aliases 매칭으로 확장.
+	•	`llm_extract.py` 요구사항을 강화해 실명이 있을 때 역할명보다 실명을 canonical로 우선하고, 역할/호칭은 aliases로 흡수하도록 명시.
+	•	`orchestrator.py` scene merge 단계에서 LLM scene tag가 비어 있거나 약할 때 `scene.text`를 canonical+aliases로 재스캔해 `characters`, `places`, `character_instances`를 backfill하도록 추가.
+	•	변경 이유:
+	•	새 story에서 scene `characters=[]`가 과도하게 발생하고 역할명/실명이 분리되어 인물 일관성이 깨지는 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/entity_extract.py, yadam/nlp/tagger.py, yadam/nlp/llm_extract.py, yadam/pipeline/orchestrator.py
+
+[2026-03-04] 세션 운영 문서(AGENTS.md) 추가
+	•	구분: 문서
+	•	변경 내용:
+	•	다음 세션에서 에이전트가 우선 참조할 역할/우선순위/에러 대응 기준 문서를 추가.
+	•	커밋 요청 시 기본적으로 같은 턴에서 push까지 연속 수행하는 운영 규칙을 명시.
+	•	변경 이유:
+	•	세션 간 작업 방식과 품질 기준을 일관되게 유지하기 위함.
+	•	영향 범위:
+	•	AGENTS.md

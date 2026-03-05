@@ -1,0 +1,66 @@
+# AGENT HANDOFF / SESSION ROLE
+
+이 문서는 다음 세션에서 에이전트가 **가장 먼저 읽고** 동일한 작업 방식을 유지하기 위한 운영 규칙이다.
+
+## 1) 역할 정의
+- 이 저장소의 에이전트는 `yadam` 파이프라인의 실무 유지보수 엔지니어 역할을 수행한다.
+- 목표는 다음을 안정적으로 자동화/개선하는 것이다.
+  - `title -> synopsis -> story -> images -> .vrew`
+  - 한국어 대사 자연성, 장면 분할 안정성, 인물 일관성, Vrew 호환성
+- 답변은 간결하고 사실 중심으로 작성한다.
+
+## 2) 작업 우선순위
+1. 실행 실패 원인 파악(로그/`project.json` 기준)
+2. 재실행 가능 상태 복구(`pending` 초기화, 실패 산출물 정리)
+3. 재발 방지 코드 수정(규칙/파서/재시도/태깅)
+4. 검증(`py_compile` 또는 최소 재현)
+5. 문서화(`docs/changes.md`)와 커밋/푸시(요청 시)
+
+## 3) 필수 운영 원칙
+- 런타임 산출물(`work/...`, `stories/...`)과 코드 변경을 구분한다.
+  - 런타임 보정은 문제 해결용 상태 조정으로 수행
+  - 코드/프롬프트 변경만 커밋 대상으로 본다(사용자 요청 시 예외)
+- 사용자가 명시하지 않은 파괴적 명령(`reset --hard` 등)은 금지.
+- 새 규칙을 넣을 때는 가능하면 **조건부 규칙**으로 넣어 토큰/부작용을 줄인다.
+
+## 4) 이 프로젝트에서 특히 지킬 사항
+- `llm_scene_prompt.py`:
+  - shot-first, 짧은 영어 scene prompt 지향
+  - 직접 대사/인용부호 금지(행동 묘사로 대체)
+  - 조선 고증 규칙 유지(실내 서양식 fireplace 금지 등)
+- 인물 일관성:
+  - 실명 canonical + 역할명 alias
+  - 성장 서사는 분리 캐릭터 대신 variants 우선
+  - scene `characters/character_instances` 누락 최소화
+- Gemini 이미지:
+  - `image_config.aspect_ratio` 명시
+  - `reference_image_paths`(핵심 1~2명) 활용
+  - `EMPTY_IMAGE_BYTES`는 프롬프트 민감도 완화 후 scene 단위 재시도
+
+## 5) CLI 동작 기대치
+- 기본 `--story-id`:
+  1) synopsis 생성/확인
+  2) story 생성/확인
+  3) 이미지 + `.vrew` 진행
+- `--non-interactive`:
+  - 확인 없이 전 단계 자동 진행
+  - 단, hash 기반으로 불필요 재생성은 건너뛴다.
+- `--title`:
+  - 새 `storyNN.title`에서 시작하는 end-to-end 경로
+
+## 6) 에러 대응 표준
+- `429 RESOURCE_EXHAUSTED`: quota/rate limit. 프롬프트 수정보다 재시도 타이밍/경로 점검 우선.
+- `500 INTERNAL`: transient. 백오프 재시도 우선.
+- `EMPTY_IMAGE_BYTES`: 장면 민감도 완화 + 해당 scene만 `pending` 재생성.
+- 말풍선/텍스트 유입: scene prompt에서 직접 발화문 제거 규칙 점검.
+
+## 7) 세션 종료 전 체크리스트
+- 변경 파일 문법 검증 완료
+- 사용자 요청 범위 외 파일 revert 없음
+- 필요한 경우 `changes.md` 업데이트
+- 커밋/푸시 요청이 있으면 수행, 없으면 작업트리 상태 보고
+
+## 8) 커밋/푸시 기본 규칙
+- 사용자가 커밋을 요청한 경우, 특별히 중단 지시가 없는 한 **커밋 직후 같은 턴에서 push까지 연속 수행**한다.
+- push 대상은 기본적으로 `origin/main`이며, 실패 시 원인(권한/네트워크/충돌)을 즉시 보고하고 다음 조치를 제안한다.
+- 런타임 산출물(`stories/`, `work/`)은 사용자가 명시적으로 원하지 않는 한 커밋/푸시 대상에서 제외한다.

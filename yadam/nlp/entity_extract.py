@@ -25,6 +25,7 @@ RE_NAME = re.compile(r"\b([가-힣]{2,4})\b")
 class Character:
     char_id: str
     name: str
+    aliases: List[str]
     hints: List[str]
 
 
@@ -52,7 +53,7 @@ def extract_characters(text: str) -> List[Character]:
     i = 1
     for nm, hs in found.items():
         cid = f"char_{i:03d}"
-        chars.append(Character(char_id=cid, name=nm, hints=sorted(hs)))
+        chars.append(Character(char_id=cid, name=nm, aliases=[], hints=sorted(hs)))
         i += 1
     return chars
 

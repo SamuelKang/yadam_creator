@@ -774,6 +774,55 @@ class Orchestrator:
                 char_name_to_id = {c["name"]: c["id"] for c in new_chars if c.get("name") and c.get("id")}
                 place_name_to_id = {p["name"]: p["id"] for p in new_places if p.get("name") and p.get("id")}
 
+                def _names_for_match(item: Dict[str, Any]) -> List[str]:
+                    names: List[str] = []
+                    primary = str(item.get("name", "")).strip()
+                    if primary:
+                        names.append(primary)
+                    for alias in item.get("aliases", []) or []:
+                        alias_s = str(alias).strip()
+                        if alias_s:
+                            names.append(alias_s)
+                    # prefer longer aliases first to avoid role-name shadowing
+                    return sorted(set(names), key=len, reverse=True)
+
+                def _backfill_scene_tags(scene_text: str) -> Dict[str, Any]:
+                    scene_chars: List[str] = []
+                    scene_places: List[str] = []
+                    scene_instances: List[Dict[str, str]] = []
+
+                    for c in new_chars:
+                        cid = c.get("id")
+                        if not cid:
+                            continue
+                        if any(name in scene_text for name in _names_for_match(c)):
+                            scene_chars.append(cid)
+
+                            variants = [str(v).strip() for v in c.get("variants", []) or [] if str(v).strip()]
+                            if variants:
+                                chosen_variant = ""
+                                for variant in variants:
+                                    if variant in scene_text:
+                                        chosen_variant = variant
+                                        break
+                                if not chosen_variant and len(variants) == 1:
+                                    chosen_variant = variants[0]
+                                if chosen_variant:
+                                    scene_instances.append({"char_id": cid, "variant": chosen_variant})
+
+                    for p in new_places:
+                        pid = p.get("id")
+                        if not pid:
+                            continue
+                        if any(name in scene_text for name in _names_for_match(p)):
+                            scene_places.append(pid)
+
+                    return {
+                        "characters": scene_chars,
+                        "places": scene_places,
+                        "character_instances": scene_instances,
+                    }
+
                 # LLM scene tag map
                 llm_tag_map: Dict[int, Dict[str, Any]] = {}
                 for t in llm_scene_tags or []:
@@ -826,13 +875,37 @@ class Orchestrator:
 
                     # apply tags (LLM preferred)
                     if sid in llm_tag_map:
-                        srec["characters"] = llm_tag_map[sid]["characters"]
-                        srec["places"] = llm_tag_map[sid]["places"]
-                        srec["character_instances"] = llm_tag_map[sid].get("character_instances", [])
+                        llm_tags = llm_tag_map[sid]
+                        srec["characters"] = llm_tags["characters"]
+                        srec["places"] = llm_tags["places"]
+                        srec["character_instances"] = llm_tags.get("character_instances", [])
+
+                        # LLM 태그가 비어 있거나 지나치게 약하면 이름/alias 직접 매칭으로 보강한다.
+                        backfill = _backfill_scene_tags(str(srec.get("text", "")))
+                        if not srec["characters"]:
+                            srec["characters"] = backfill["characters"]
+                        else:
+                            seen = set(srec["characters"])
+                            srec["characters"].extend([cid for cid in backfill["characters"] if cid not in seen])
+
+                        if not srec["places"]:
+                            srec["places"] = backfill["places"]
+                        else:
+                            seen = set(srec["places"])
+                            srec["places"].extend([pid for pid in backfill["places"] if pid not in seen])
+
+                        if not srec["character_instances"]:
+                            srec["character_instances"] = backfill["character_instances"]
                     else:
                         # LLM 실패 시: 규칙 기반 태깅 사용(단, id 매핑이 seed와 맞는지에 따라 품질 차이 있음)
-                        # 여기서는 scene_records에 이미 tag_scene 결과가 들어있으므로 그대로 둔다.
-                        pass
+                        # 여기서는 scene_records 기본 태깅에 alias 기반 보강을 추가한다.
+                        backfill = _backfill_scene_tags(str(srec.get("text", "")))
+                        if not srec.get("characters"):
+                            srec["characters"] = backfill["characters"]
+                        if not srec.get("places"):
+                            srec["places"] = backfill["places"]
+                        if not srec.get("character_instances"):
+                            srec["character_instances"] = backfill["character_instances"]
 
                     srec["image"] = img_meta
                     merged[sid] = srec
