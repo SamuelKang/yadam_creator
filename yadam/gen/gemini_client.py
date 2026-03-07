@@ -115,14 +115,15 @@ class GeminiFlashImageClient(ImageClient):
             if req.aspect_ratio:
                 prompt += f"\n\n[output constraint] aspect ratio: {req.aspect_ratio}"
             ref_paths = []
-            for raw in req.reference_image_paths[:2]:
+            for raw in req.reference_image_paths[:4]:
                 p = Path(raw)
                 if p.exists() and p.is_file():
                     ref_paths.append(p)
             if ref_paths:
                 prompt += (
-                    "\n\n[reference constraint] Match the same face, hairstyle, clothing silhouette, "
-                    "and core identity anchors from the attached character reference image(s)."
+                    "\n\n[reference constraint] Preserve core identity anchors from attached references. "
+                    "If character references are present, keep face/hairstyle/clothing silhouette consistent. "
+                    "If place references are present, preserve environment mood/layout cues without copying text."
                 )
 
             parts = []

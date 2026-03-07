@@ -86,6 +86,12 @@ class LLMScenePromptBuilder:
             "shot_hint, focus_hint, time_hint를 반드시 반영하고, prev_summaries가 있으면 같은 shot/focus/time 조합을 그대로 반복하지 말고 변주한다.",
             "최종 prompt는 짧고 직접적인 영어 문장 3~6개 정도로 작성하고, 첫 문장은 반드시 카메라/샷 지시(예: Wide shot, Over-the-shoulder shot, Extreme close-up, High angle)로 시작한다.",
             "장면 핵심 시각 정보만 남긴다: 주인공 1~2명, 핵심 행동 1개, 배경 1개, 감정/분위기 1개. 장황한 boilerplate, 설명문, 중복 수식은 줄인다.",
+            "정적인 기념사진 구도는 피하고, 행동 중간 동작(moment in action), 시선 방향, 손/몸의 제스처, 표정 변화를 명확히 넣어 연출 강도를 높인다.",
+            "표정 지시는 반드시 포함한다(긴장/분노/안도/결의/불안 등). 눈빛, 눈썹, 입술, 턱선 같은 얼굴 단서를 한 줄 이상 명시한다.",
+            "대본에 야간/새벽/황혼이 명시되지 않으면 기본 시간대는 daytime으로 둔다.",
+            "색감은 칙칙하지 않게 유지한다: bright exposure, rich mid/high saturation, clear local contrast, readable details in faces and costumes.",
+            "배경은 빈 화면처럼 두지 말고 문맥에 맞는 서사 디테일(장터 군중, 작업하는 사람, 이동하는 행인, 생활 소품)을 적정량 넣는다.",
+            "characters 입력에 species가 있으면 해당 종을 반드시 유지한다(인간/소/개/말 등).",
             "같은 인물(name/variant)은 장면 간 외형 일관성을 유지한다(성별/연령대/얼굴 인상/헤어/복식 핵심 앵커 유지). 인물 입력에 없는 새 헤어스타일/머리장식/복식 컨셉을 임의로 추가하지 않는다.",
             "대본 문장을 그대로 복사하지 말고, 장면 묘사로 재구성한다. 시대지시가 있으면 조선시대 의복/소품/건축/분위기를 유지한다.",
             "직접 대사나 인용부호(\"...\", '...')를 prompt에 쓰지 않는다. 등장인물의 말은 입 모양, 손짓, 표정, 긴장감, 권위적인 태도 같은 시각적 행동으로만 번역한다.",
@@ -112,6 +118,24 @@ class LLMScenePromptBuilder:
             rules.extend([
                 "대본이나 소품에 '주먹밥'이 있으면 일본식 오니기리로 해석하지 말고, 조선시대의 손으로 쥔 둥글고 투박한 밥덩이로 묘사한다.",
                 "주먹밥은 삼각형이 아니며, 김 띠나 일본식 포장 없이 헝겊/소반/손 위에 놓인 소박한 형태를 우선한다.",
+            ])
+
+        if any(token in rule_corpus for token in ("황소", "암소", "수소", "송아지", "외양간", "쟁기", "발굽")):
+            rules.extend([
+                "누렁이/소가 등장하면 반드시 bovine cattle로 묘사한다. 절대 dog/canine으로 바꾸지 않는다.",
+                "소 해부학 고정: cloven hooves, bovine muzzle, heavy neck-shoulder mass, cattle horn/ear proportions.",
+                "동물 표정은 과도한 의인화 대신 실제 동물 제스처(귀 방향, 목의 긴장, 발굽 자세)로 표현한다.",
+            ])
+        elif "누렁이" in rule_corpus:
+            rules.extend([
+                "'누렁이' 단어만으로 소/개를 단정하지 말고 scene_text 문맥으로 종을 판단한다.",
+                "소 문맥(황소/외양간/쟁기/발굽)이면 cattle, 개 문맥(짖다/강아지/개집)이면 dog로 유지한다.",
+            ])
+
+        if any(token in rule_corpus for token in ("시장", "장터", "저잣거리", "관아", "마을")):
+            rules.extend([
+                "공간이 시장/장터/관아/마을이면 배경 군중과 생활 동선을 넣어 장면 생동감을 높인다.",
+                "군중은 주피사체를 가리지 않는 선에서 depth layer(전경/중경/후경)로 분산 배치한다.",
             ])
 
         if any(token in rule_corpus for token in ("아궁이", "온돌", "헛간", "오두막", "방", "부엌")):

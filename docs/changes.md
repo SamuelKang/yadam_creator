@@ -734,3 +734,88 @@
 	•	세션 간 작업 방식과 품질 기준을 일관되게 유지하기 위함.
 	•	영향 범위:
 	•	AGENTS.md
+
+[2026-03-07] clip 동적 연출/고채도 기본, 동물 캐릭터(누렁이=소) 고정, 장소 서사성 강화
+	•	구분: 구현+프롬프트
+	•	변경 내용:
+	•	`llm_scene_prompt.py` 공통 규칙을 강화해 정적 구도를 줄이고, 표정/제스처/행동 중간 동작을 반드시 포함하도록 조정.
+	•	대본에 야간 명시가 없으면 낮(daytime)을 기본으로 두고, 밝은 노출 + 중고채도 + 명확한 대비를 지시하도록 추가.
+	•	시장/장터/마을/관아 문맥에서는 배경 군중/생활 동선을 넣어 생동감을 높이도록 조건부 규칙 추가.
+	•	누렁이/소 관련 장면에서 `소(cattle)` 해부학을 고정하고 개(canine)로 바뀌지 않도록 조건부 규칙 추가.
+	•	`llm_extract.py`에 캐릭터 `species` 필드를 추가하고, 반복 등장 동물도 캐릭터로 추출하도록 요구사항 강화.
+	•	`orchestrator.py`에서 `species`를 project 캐릭터 메타에 저장/전파하고, 장면 프롬프트/캐릭터 프롬프트 생성 시 species를 전달하도록 반영.
+	•	`entity_extract.py` 규칙 기반 후보에 `누렁이`, `황소`를 추가해 LLM 실패 폴백에서도 동물 캐릭터 누락을 줄임.
+	•	`build_place_prompt()`를 조정해 장소 컷에 문맥형 생활 요소(사람/군중/동물)를 적정량 허용하고, 기본 시간대를 낮으로 유도.
+	•	변경 이유:
+	•	`story11` 비교에서 드러난 클립 정적 연출, 저채도/야간 편중, 동물 캐릭터 오인식(소→개), 배경 서사성 부족 문제를 줄이기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_scene_prompt.py, yadam/nlp/llm_extract.py, yadam/pipeline/orchestrator.py, yadam/prompts/builder.py, yadam/nlp/entity_extract.py, docs/changes.md
+
+[2026-03-07] 2차 LLM 추출을 1000자 청크 다회 호출 방식으로 변경
+	•	구분: 구현
+	•	변경 내용:
+	•	`LLMEntityExtractor`를 단일 대본 요청 방식에서 `chunk_chars=1000` 기준의 다회 호출 방식으로 변경.
+	•	대본을 겹침(overlap) 포함 청크로 분할하고, 각 청크마다 해당 구간과 겹치는 scene 요약만 선택해 LLM에 전달.
+	•	청크 분할은 단순 글자 슬라이딩이 아니라 문장 경계(마침표/물음표/느낌표/줄바꿈) 기준으로 근사 1000자를 맞추도록 보강.
+	•	청크별 결과를 병합하도록 로직 추가:
+	•	캐릭터/장소는 canonical name 기준 dedup + aliases/anchors/traits/variants union 병합.
+	•	scene_tags는 scene_id 기준으로 characters/places/character_instances를 set 병합.
+	•	`LLMExtractorConfig.max_script_chars` 기본값을 0(전체 대본 사용)으로 변경.
+	•	변경 이유:
+	•	긴 대본에서 앞부분 편향을 줄이고, 캐릭터/장면 정보 추출 범위를 대본 전체로 확장하기 위함.
+	•	영향 범위:
+	•	yadam/nlp/llm_extract.py, docs/changes.md
+[2026-03-07] .vrew export에 voice/style preset 반영(Story10 수동 편집값 기준)
+
+- 목적
+	- 수동 편집한 `.vrew`(voice id/volume/speed/pitch, caption style) 값을 다음 자동 export에도 동일하게 반영.
+- 변경
+	- `yadam/export/vrew_exporter.py`
+	- 기본 export preset을 KT `vos-female28`(ko-KR, middle, emotion neutral, volume 0, speed 0, pitch -1)로 설정.
+	- `globalCaptionStyle` 기본값을 Story10 편집본과 동일한 스타일(`Pretendard-Vrew_700`, outline 포함)로 설정.
+	- `ttsClipInfosMap` 각 clip에도 동일 speaker/volume/speed/pitch/emotion을 기록.
+	- 같은 story의 기존 `out/<story>.vrew`가 존재하면 내부 `project.json`의 `lastTTSSettings`/`globalCaptionStyle`를 우선 재사용.
+	- 환경변수 `VREW_TEMPLATE_PATH`가 지정되면 해당 `.vrew`를 preset 소스로 우선 사용.
+- 검증
+	- `python -m py_compile yadam/export/vrew_exporter.py` 통과.
+	- `work/story10/out/project.json`로 임시 export 후, 결과 `project.json`에서 `version=16`, `lastTTSSettings`, `ttsClipInfosMap[*]`, `globalCaptionStyle` 반영 확인.
+[2026-03-07] story11 점검 이슈 대응: 돌쇠 누락 / 누렁이 종 오판별 보강
+
+- 증상
+	- `work/story11/out/project.json`에서 `llm_extract` 실패(`additionalProperties is not supported in the Gemini API.`).
+	- 그 결과 규칙 기반 폴백으로 내려가며 캐릭터가 역할명 위주(`도령/마님/...`)로 구성되어 `돌쇠` 누락.
+	- `누렁이`가 `species=기타`로 남아 캐릭터 프롬프트의 소(cattle) 강제 규칙이 약해짐.
+- 원인
+	- `yadam/nlp/llm_extract.py`의 response schema에 `List[Dict[str,str]]`(`scene_tags.character_instances`)가 포함되어 Gemini response_schema 제약과 충돌.
+	- 폴백 추출기(`entity_extract.py`)의 실명 후보가 부족해 `돌쇠`를 안정적으로 잡지 못함.
+- 수정
+	- `yadam/nlp/llm_extract.py`
+	- `LLMSceneTag.character_instances`를 `Dict` 대신 고정 모델(`name`, `variant`) 리스트로 변경해 schema 제약 회피.
+	- `yadam/nlp/entity_extract.py`
+	- 폴백 실명 힌트에 `돌쇠`, `연화`, `최 서리` 추가.
+	- `yadam/pipeline/orchestrator.py`
+	- `_infer_species`에 `script_text` 문맥 인자 추가.
+	- `누렁이`는 대본 전체 문맥(외양간/쟁기/고삐/발굽 vs 개집/짖다/꼬리) 카운트로 소/개를 판별.
+	- merge/fallback 경로 모두 `clean_text`를 전달해 종 판별 일관성 강화.
+- 검증
+	- `py_compile` 통과:
+		- `yadam/nlp/llm_extract.py`
+		- `yadam/nlp/entity_extract.py`
+		- `yadam/pipeline/orchestrator.py`
+	- 폴백 추출 결과에서 `돌쇠` 포함 확인(`extract_characters`).
+	- `LLMExtractionResult.model_json_schema()` 기준 `additionalProperties` 키 없음 확인.
+[2026-03-07] 2차 LLM(1,000자 chunk) 단계에서 scene별 clip 프롬프트 동시 생성
+
+- 목적
+	- 캐릭터/장소 추출 시점(2차 LLM chunk 분석)에서 scene별 clip image prompt를 함께 생성해, clip 단계의 추가 LLM 호출을 줄이고 문맥 일관성을 높임.
+- 변경
+	- `yadam/nlp/llm_extract.py`
+	- LLM 응답 스키마에 `scene_prompts[{scene_id, prompt}]` 추가.
+	- chunk 요청 요구사항에 scene별 짧은 영어 clip prompt 생성 규칙 추가.
+	- chunk merge 시 `scene_id` 기준으로 prompt를 취합(정보량이 큰 prompt 우선).
+	- `yadam/pipeline/orchestrator.py`
+	- scene 레코드에 `llm_clip_prompt` 필드 추가.
+	- 구조 merge 시 `llm_out.scene_prompts`를 `scene.llm_clip_prompt`로 저장.
+	- clip 생성 단계에서 `scene.llm_clip_prompt`가 있으면 우선 사용하고, 없을 때만 기존 `LLMScenePromptBuilder` 호출.
+- 검증
+	- `python -m py_compile yadam/nlp/llm_extract.py yadam/pipeline/orchestrator.py` 통과.

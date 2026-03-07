@@ -96,6 +96,7 @@ def build_character_prompt(
     gender: str = "불명",
     age_stage: str = "불명",
     variant: str = "",
+    species: str = "인간",
 
     # ✅ 추가: 계급/재산/궁중 컨텍스트
     context: str = "민간",         # 궁중/민간/관아/사찰...
@@ -131,6 +132,7 @@ def build_character_prompt(
     wl = (wealth_level or "").strip()
     tier = (wardrobe_tier or "T2").strip().upper()
     variant_norm = variant_line.strip()
+    species_norm = (species or "인간").strip()
     is_pojol = _is_pojol_character(name, anchors, variant_norm, ctx, cr, wardrobe_anchors)
 
     # Variant should override generic class/tier presets when it implies a clear disguise/state.
@@ -273,6 +275,7 @@ def build_character_prompt(
 
     content_lines: List[str] = [
         f"캐릭터: {name}" + (f" ({variant_line})" if variant_line else ""),
+        f"종(species): {species_norm}",
         f"컨텍스트: {ctx}" + (f" / 궁중역할: {cr}" if (ctx == "궁중" and cr) else ""),
         f"신분: {sc}, 재산: {wl}, 복장티어: {tier}",
         f"성별: {gender}",
@@ -288,6 +291,16 @@ def build_character_prompt(
         "조명: 얼굴 윤곽이 자연스럽게 드러나는 부드러운 조명, 과도한 하이라이트/노이즈 없음",
         "요구: 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
     ]
+    if species_norm != "인간":
+        content_lines += [
+            "동물 캐릭터 규칙: 인간형(의복/손/직립/인간 얼굴 비율)으로 의인화하지 않는다.",
+            "동물 전신 비율/해부학을 정확히 유지하고, 해당 종의 귀·주둥이·다리 관절·발 형태를 보존한다.",
+        ]
+    if species_norm == "소":
+        content_lines += [
+            "종 고정: 반드시 소(cattle)로 묘사한다. 개/늑대/사슴/말로 바꾸지 않는다.",
+            "소 해부학: 갈라진 발굽(cloven hooves), 소의 주둥이, 목/어깨 체형, 뿔 형태를 자연스럽게 유지한다.",
+        ]
     content = "\n".join(content_lines)
 
     return PromptParts(era.prefix, content, style.suffix, era.safety).build()
@@ -304,9 +317,9 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
     content = "\n".join([
         f"장소: {name}",
         f"분위기·시간·날씨·구조 앵커: {anchor_line}",
-        "구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 인물 없음(사람, 실루엣, 군중, 그림자 인물 포함)",
-        "밝기: 노출을 충분히 올려 디테일이 읽히게, 과도한 암부 뭉침 금지",
-        "시간대: 낮 또는 밝은 황혼(blue hour)",
+        "구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 문맥에 맞는 생활 요소(지나가는 사람/군중/동물/장터 기척)를 과하지 않게 포함 가능",
+        "밝기/색감: 노출을 충분히 올려 디테일이 읽히게, 암부 뭉침 금지, 생기 있는 색 대비와 중고채도 유지",
+        "시간대: 대본에 야간 명시가 없으면 기본은 낮",
         "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
     ])
     return PromptParts(era.prefix, content, style.suffix, era.safety).build()

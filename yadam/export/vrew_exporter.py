@@ -9,6 +9,8 @@ from uuid import uuid4
 import re
 import zipfile
 import json
+import os
+from copy import deepcopy
 
 
 @dataclass(frozen=True)
@@ -48,18 +50,29 @@ class VrewFileExporter(VrewExporter):
         clip_text_soft_max_chars = max(clip_text_max_chars, int(req.clip_text_soft_max_chars))
         input_script = str(req.project.get("project", {}).get("input_script_path") or "").strip()
         story_name = Path(input_script).stem if input_script else "story"
+        preset = self._resolve_export_preset(Path(req.out_dir), story_name)
 
         now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
         project_id = str(uuid4())
-        speaker_id = "10"
+        speaker_info = dict(preset["speaker"])
+        speaker_id = str(speaker_info.get("speakerId") or speaker_info.get("name") or "vos-female28")
+        speaker_info["speakerId"] = speaker_id
         speaker = {
+            "provider": str(speaker_info.get("provider") or "kt"),
+            "gender": str(speaker_info.get("gender") or "female"),
+            "lang": str(speaker_info.get("lang") or "ko-KR"),
+            "name": str(speaker_info.get("name") or speaker_id),
             "speakerId": speaker_id,
-            "name": "unknown",
-            "provider": "vrew",
-            "age": "youth",
-            "gender": "female",
-            "lang": "ko",
+            "age": str(speaker_info.get("age") or "middle"),
         }
+        if isinstance(speaker_info.get("emotions"), list):
+            speaker["emotions"] = list(speaker_info["emotions"])
+        if isinstance(speaker_info.get("tags"), list):
+            speaker["tags"] = list(speaker_info["tags"])
+        voice_volume = float(preset.get("volume", 0))
+        voice_speed = float(preset.get("speed", 0))
+        voice_pitch = float(preset.get("pitch", -1))
+        voice_emotion = str(preset.get("emotion") or "neutral")
 
         files: List[Dict[str, Any]] = []
 
@@ -137,22 +150,14 @@ class VrewFileExporter(VrewExporter):
                     "text": {
                         "raw": tts_text,
                         "processed": tts_text,
-                        "textAspectLang": "ko",
+                        "textAspectLang": speaker["lang"],
                     },
-                    "speaker": {
-                        "age": speaker["age"],
-                        "gender": speaker["gender"],
-                        "lang": speaker["lang"],
-                        "name": speaker["name"],
-                        "speakerId": speaker["speakerId"],
-                        "provider": speaker["provider"],
-                        "versions": ["v1"],
-                    },
+                    "speaker": dict(speaker),
                     "duration": duration,
-                    "volume": 1,
-                    "speed": 0,
-                    "pitch": 0,
-                    "version": "v1",
+                    "volume": voice_volume,
+                    "speed": voice_speed,
+                    "pitch": voice_pitch,
+                    "emotion": voice_emotion,
                 }
 
                 clips.append({
@@ -170,7 +175,7 @@ class VrewFileExporter(VrewExporter):
                 })
 
         project_obj = {
-            "version": 15,
+            "version": int(preset.get("project_version", 16)),
             "projectId": project_id,
             "files": files,
             "transcript": {
@@ -197,46 +202,17 @@ class VrewFileExporter(VrewExporter):
                 "projectAudioLanguage": "ko",
                 "audioLanguagesMap": {},
                 "captionDisplayMode": {"0": True, "1": False},
-                "globalCaptionStyle": {
-                    "captionStyleSetting": {
-                        "mediaId": "uc-0010-simple-textbox",
-                        "yAlign": "bottom",
-                        "yOffset": 0,
-                        "xOffset": 0,
-                        "rotation": 0,
-                        "width": 0.96,
-                        "scaleFactor": 1.7777777777777777,
-                        "customAttributes": [
-                            {"attributeName": "--textbox-color", "type": "color-hex", "value": "rgba(0, 0, 0, 0)"},
-                            {"attributeName": "--textbox-align", "type": "textbox-align", "value": "center"},
-                        ],
-                    },
-                    "quillStyle": {
-                        "font": "Pretendard-Vrew_700",
-                        "size": "100",
-                        "color": "#ffffff",
-                        "outline-on": "true",
-                        "outline-color": "#000000",
-                        "outline-width": "6",
-                    },
-                },
+                "globalCaptionStyle": deepcopy(preset["global_caption_style"]),
                 "markerNames": {},
                 "flipSetting": {},
                 "videoRatio": 1.7777777777777777,
                 "videoSize": {"width": 1920, "height": 1080},
                 "lastTTSSettings": {
-                    "pitch": 0,
-                    "speed": 0,
-                    "volume": 0,
-                    "speaker": {
-                        "age": speaker["age"],
-                        "gender": speaker["gender"],
-                        "lang": speaker["lang"],
-                        "name": speaker["name"],
-                        "speakerId": speaker["speakerId"],
-                        "provider": speaker["provider"],
-                    },
-                    "version": "v1",
+                    "pitch": voice_pitch,
+                    "speed": voice_speed,
+                    "volume": voice_volume,
+                    "speaker": dict(speaker),
+                    "emotion": voice_emotion,
                 },
             },
             "statistics": {
@@ -260,6 +236,86 @@ class VrewFileExporter(VrewExporter):
 
         payload_out = Path(req.out_dir) / "vrew_payload.json"
         payload_out.write_text(json.dumps(req.project, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _resolve_export_preset(self, out_dir: Path, story_name: str) -> Dict[str, Any]:
+        base = self._default_export_preset()
+        template_path = os.getenv("VREW_TEMPLATE_PATH", "").strip()
+        candidates: List[Path] = []
+        if template_path:
+            candidates.append(Path(template_path).expanduser())
+        candidates.append(out_dir / f"{story_name}.vrew")
+
+        for p in candidates:
+            template = self._load_preset_from_vrew(p)
+            if template is not None:
+                base.update({k: v for k, v in template.items() if v is not None})
+                break
+        return base
+
+    def _load_preset_from_vrew(self, vrew_path: Path) -> Dict[str, Any] | None:
+        try:
+            if not vrew_path.exists():
+                return None
+            with zipfile.ZipFile(vrew_path, "r") as zf:
+                raw = zf.read("project.json")
+            obj = json.loads(raw)
+            props = obj.get("props") if isinstance(obj.get("props"), dict) else {}
+            lts = props.get("lastTTSSettings") if isinstance(props.get("lastTTSSettings"), dict) else {}
+            speaker = lts.get("speaker") if isinstance(lts.get("speaker"), dict) else {}
+            gcs = props.get("globalCaptionStyle") if isinstance(props.get("globalCaptionStyle"), dict) else None
+            return {
+                "project_version": int(obj.get("version", 16)),
+                "speaker": speaker if speaker else None,
+                "volume": lts.get("volume"),
+                "speed": lts.get("speed"),
+                "pitch": lts.get("pitch"),
+                "emotion": lts.get("emotion"),
+                "global_caption_style": deepcopy(gcs) if gcs else None,
+            }
+        except Exception:
+            return None
+
+    def _default_export_preset(self) -> Dict[str, Any]:
+        return {
+            "project_version": 16,
+            "speaker": {
+                "provider": "kt",
+                "gender": "female",
+                "lang": "ko-KR",
+                "name": "vos-female28",
+                "speakerId": "vos-female28",
+                "age": "middle",
+                "emotions": ["neutral", "happy", "angry"],
+                "tags": ["hurrying", "firm", "strong", "calm"],
+            },
+            "volume": 0,
+            "speed": 0,
+            "pitch": -1,
+            "emotion": "neutral",
+            "global_caption_style": {
+                "captionStyleSetting": {
+                    "mediaId": "uc-0010-simple-textbox",
+                    "yAlign": "bottom",
+                    "yOffset": 0,
+                    "xOffset": 0,
+                    "rotation": 0,
+                    "width": 0.96,
+                    "scaleFactor": 1.7777777777777777,
+                    "customAttributes": [
+                        {"attributeName": "--textbox-color", "type": "color-hex", "value": "rgba(0, 0, 0, 0)"},
+                        {"attributeName": "--textbox-align", "type": "textbox-align", "value": "center"},
+                    ],
+                },
+                "quillStyle": {
+                    "font": "Pretendard-Vrew_700",
+                    "size": "100",
+                    "color": "#ffffff",
+                    "outline-on": "true",
+                    "outline-color": "#000000",
+                    "outline-width": "6",
+                },
+            },
+        }
 
     def _collect_scenes(self, project: Dict[str, Any]) -> List[Dict[str, Any]]:
         scenes = [s for s in (project.get("scenes") or []) if isinstance(s, dict)]

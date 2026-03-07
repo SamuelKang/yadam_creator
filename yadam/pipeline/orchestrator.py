@@ -398,6 +398,31 @@ class Orchestrator:
                 break
         return out
 
+    def _infer_species(
+        self,
+        name: str,
+        aliases: List[str],
+        anchors: List[str],
+        script_text: str = "",
+    ) -> str:
+        corpus = " ".join([name or "", " ".join(aliases or []), " ".join(anchors or []), script_text or ""])
+        if any(tok in corpus for tok in ("황소", "암소", "수소", "송아지", "소")):
+            return "소"
+        if any(tok in corpus for tok in ("강아지", "개", "진돗개")):
+            return "개"
+        if any(tok in corpus for tok in ("말", "망아지", "준마")):
+            return "말"
+        # '누렁이'는 소/개 모두에 쓰일 수 있으므로 전체 대본 문맥으로 판별을 시도한다.
+        if "누렁이" in corpus:
+            cattle_hits = sum(1 for t in ("황소", "암소", "수소", "송아지", "외양간", "쟁기", "발굽", "고삐") if t in corpus)
+            dog_hits = sum(1 for t in ("강아지", "진돗개", "개집", "짖", "꼬리") if t in corpus)
+            if cattle_hits > dog_hits:
+                return "소"
+            if dog_hits > cattle_hits:
+                return "개"
+            return "기타"
+        return "인간"
+
     def _pick_main_characters(self, project: Dict[str, Any], max_supporting: int = 4) -> List[Dict[str, Any]]:
         chars = [c for c in project.get("characters", []) if isinstance(c, dict)]
         scenes = [s for s in project.get("scenes", []) if isinstance(s, dict)]
@@ -629,6 +654,7 @@ class Orchestrator:
                     "characters": tags["characters"],
                     "places": tags["places"],
                     "character_instances": [],
+                    "llm_clip_prompt": "",
                     "image": _default_image_meta(),
                 })
 
@@ -692,6 +718,7 @@ class Orchestrator:
                 llm_chars = (llm_out or {}).get("characters", []) if llm_debug.get("ok") else []
                 llm_places = (llm_out or {}).get("places", []) if llm_debug.get("ok") else []
                 llm_scene_tags = (llm_out or {}).get("scene_tags", []) if llm_debug.get("ok") else []
+                llm_scene_prompts = (llm_out or {}).get("scene_prompts", []) if llm_debug.get("ok") else []
 
                 # characters
                 new_chars: List[Dict[str, Any]] = []
@@ -709,6 +736,15 @@ class Orchestrator:
                             "id": f"char_{i:03d}",
                             "name": name,
                             "aliases": c.get("aliases", []),
+                            "species": str(
+                                c.get("species")
+                                or self._infer_species(
+                                    name,
+                                    c.get("aliases", []),
+                                    c.get("visual_anchors", []),
+                                    clean_text,
+                                )
+                            ),
                             "role": c.get("role", "조연"),
                             "traits": c.get("traits", []),
                             "visual_anchors": c.get("visual_anchors", []),
@@ -735,6 +771,7 @@ class Orchestrator:
                             "id": f"char_{i:03d}",
                             "name": name,
                             "hints": c.hints,
+                            "species": self._infer_species(name, [], c.hints, clean_text),
                             "image": img_meta,
                         })
 
@@ -857,6 +894,16 @@ class Orchestrator:
                         "character_instances": inst,
                     }
 
+                llm_prompt_map: Dict[int, str] = {}
+                for sp in llm_scene_prompts or []:
+                    try:
+                        sid = int(sp.get("scene_id"))
+                    except Exception:
+                        continue
+                    ptxt = str(sp.get("prompt") or "").strip()
+                    if ptxt:
+                        llm_prompt_map[sid] = ptxt
+
                 existing_scenes = {
                     int(s.get("id")): s for s in data.get("scenes", [])
                     if isinstance(s, dict) and s.get("id") is not None
@@ -870,8 +917,10 @@ class Orchestrator:
                     if isinstance(prev, dict):
                         # keep previous image meta if exists
                         img_meta = prev.get("image") if isinstance(prev.get("image"), dict) else _default_image_meta()
+                        prev_llm_prompt = str(prev.get("llm_clip_prompt") or "").strip()
                     else:
                         img_meta = _default_image_meta()
+                        prev_llm_prompt = ""
 
                     # apply tags (LLM preferred)
                     if sid in llm_tag_map:
@@ -908,6 +957,7 @@ class Orchestrator:
                             srec["character_instances"] = backfill["character_instances"]
 
                     srec["image"] = img_meta
+                    srec["llm_clip_prompt"] = llm_prompt_map.get(sid, prev_llm_prompt)
                     merged[sid] = srec
 
                 data["scenes"] = [merged[i] for i in sorted(merged.keys())]
@@ -1030,6 +1080,7 @@ class Orchestrator:
                     prompt = build_character_prompt(
                         self.era, self.char_style, name, anchors2,
                         gender=gender, age_stage=age_stage_for_prompt, variant=var,
+                        species=str(c.get("species", "인간") or "인간"),
                         context=str(c.get("context", "민간")),
                         court_role=str(c.get("court_role", "")),
                         social_class=str(c.get("social_class", "불명")),
@@ -1223,7 +1274,7 @@ class Orchestrator:
                     return "밤"
                 if "폭풍" in t or "폭풍우" in t or "비바람" in t:
                     return "폭풍"
-                return ""
+                return "낮(명시 없으면 기본)"
 
             def _focus_hint(text: str) -> str:
                 s2 = (text or "").strip()
@@ -1323,6 +1374,7 @@ class Orchestrator:
 
                     char_objs.append({
                         "name": cobj.get("name", ""),
+                        "species": cobj.get("species", "인간") or "인간",
                         "variant": variant,
                         "gender": cobj.get("gender", "") or "불명",
                         "age_stage": age_stage2,
@@ -1392,13 +1444,13 @@ class Orchestrator:
             print(f"[6/7] clips: total={s_total}")
 
             def _scene_reference_image_paths(s_obj: Dict[str, Any]) -> List[str]:
-                refs: List[str] = []
+                char_refs: List[str] = []
                 char_ids2 = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
                 selected = self._select_scene_character_ids(
                     str(s_obj.get("text", "")),
                     char_ids2,
                     char_map,
-                    limit=2,
+                    limit=3,
                 )
                 ci2 = s_obj.get("character_instances", [])
                 inst_map2: Dict[str, str] = {}
@@ -1423,8 +1475,27 @@ class Orchestrator:
                         if isinstance(img_meta2, dict):
                             img_path = str(img_meta2.get("path") or "")
                     if img_path and Path(img_path).exists():
-                        refs.append(img_path)
-                return refs[:2]
+                        char_refs.append(img_path)
+
+                place_ref: Optional[str] = None
+                place_ids2 = s_obj.get("places", []) if isinstance(s_obj.get("places"), list) else []
+                if place_ids2:
+                    p_obj = place_map.get(str(place_ids2[0]))
+                    if isinstance(p_obj, dict):
+                        p_img = p_obj.get("image")
+                        if isinstance(p_img, dict):
+                            p_path = str(p_img.get("path") or "")
+                            if p_path and Path(p_path).exists():
+                                place_ref = p_path
+
+                refs: List[str] = []
+                for p in char_refs[:3]:
+                    if p not in refs:
+                        refs.append(p)
+                if place_ref and place_ref not in refs:
+                    refs.append(place_ref)
+
+                return refs[:4]
 
             for s in scenes_list:
                 s_done += 1
@@ -1471,6 +1542,16 @@ class Orchestrator:
                     pu = img_meta.get("prompt_used")
                     if isinstance(pu, str) and pu.strip():
                         prompt = pu.strip()
+
+                if prompt is None:
+                    prebuilt = str(s.get("llm_clip_prompt") or "").strip()
+                    if prebuilt:
+                        prompt = prebuilt
+                        ph = img_meta.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({"phase": "llm_extract_scene_prompt", "source": "structure_stage"})
+                        img_meta["prompt_history"] = ph
 
                 if prompt is None:
                     try:
