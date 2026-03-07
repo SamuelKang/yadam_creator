@@ -1299,6 +1299,15 @@ class Orchestrator:
                 s_obj: Dict[str, Any],
                 place_name: Optional[str],
             ) -> str:
+                def _strip_direct_speech(text: str) -> str:
+                    s = str(text or "")
+                    # 따옴표 기반 직접 대사를 제거해 말풍선 유도를 줄인다.
+                    s = re.sub(r"[\"“][^\"”\n]{1,220}[\"”]", " ", s)
+                    # 대사형 접두(예: 김도령: ...) 제거
+                    s = re.sub(r"(?:^|\s)[가-힣A-Za-z]{1,10}\s*[:：]\s*[^.\n]{1,140}", " ", s)
+                    s = re.sub(r"\s+", " ", s).strip()
+                    return s
+
                 def _continuity_block(chars: List[Dict[str, Any]]) -> str:
                     lines: List[str] = []
                     for ch in chars[:2]:
@@ -1338,7 +1347,8 @@ class Orchestrator:
 
                 char_objs: List[Dict[str, Any]] = []
                 char_ids = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
-                scene_text = str(s_obj.get("text", ""))
+                scene_text_raw = str(s_obj.get("text", ""))
+                scene_text = _strip_direct_speech(scene_text_raw) or scene_text_raw
                 selected_char_ids = self._select_scene_character_ids(scene_text, char_ids, char_map, limit=2)
 
                 inst_map: Dict[str, str] = {}

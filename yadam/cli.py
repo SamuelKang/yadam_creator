@@ -48,17 +48,20 @@ def _confirm_overwrite(target: Path) -> bool:
         print("y 또는 n만 입력하세요.")
 
 
-def _confirm_continue_default_yes(message: str) -> bool:
+def _confirm_continue_default_yes_or_all(message: str) -> str:
     print("")
     print("=" * 72)
-    print(f"[CONFIRM] {message} (Y/n)")
+    print(f"[CONFIRM] {message} (Y/n/a)")
+    print("- a: 이후 단계는 모두 non-interactive로 자동 진행")
     while True:
         ans = input("> ").strip().lower()
         if ans in ("", "y", "yes"):
-            return True
+            return "yes"
         if ans in ("n", "no"):
-            return False
-        print("Y, n 중 하나로 입력하세요. Enter는 Y입니다.")
+            return "no"
+        if ans in ("a", "all"):
+            return "all"
+        print("Y, n, a 중 하나로 입력하세요. Enter는 Y입니다.")
 
 
 def _load_prompt_template(root: Path, relative_path: str) -> str:
@@ -548,11 +551,14 @@ def main() -> None:
     print(f"[INFO] step 1/3: generating synopsis for {story_id}")
     if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
         return
-    if (not args.non_interactive) and (
-        not _confirm_continue_default_yes("시놉시스 생성을 확인했습니다. story 생성으로 진행할까요?")
-    ):
-        print("[INFO] stopped after synopsis generation")
-        return
+    if not args.non_interactive:
+        proceed = _confirm_continue_default_yes_or_all("시놉시스 생성을 확인했습니다. story 생성으로 진행할까요?")
+        if proceed == "no":
+            print("[INFO] stopped after synopsis generation")
+            return
+        if proceed == "all":
+            args.non_interactive = True
+            print("[INFO] switch to non-interactive mode for remaining steps")
 
     print(f"[INFO] step 2/3: generating story for {story_id}")
     if not _run_make_story_mode(
@@ -562,11 +568,14 @@ def main() -> None:
         non_interactive=args.non_interactive,
     ):
         return
-    if (not args.non_interactive) and (
-        not _confirm_continue_default_yes("대본 생성을 확인했습니다. 이미지 및 .vrew 생성을 진행할까요?")
-    ):
-        print("[INFO] stopped after story generation")
-        return
+    if not args.non_interactive:
+        proceed = _confirm_continue_default_yes_or_all("대본 생성을 확인했습니다. 이미지 및 .vrew 생성을 진행할까요?")
+        if proceed == "no":
+            print("[INFO] stopped after story generation")
+            return
+        if proceed == "all":
+            args.non_interactive = True
+            print("[INFO] switch to non-interactive mode for remaining steps")
 
     print(f"[INFO] step 3/3: running image and .vrew pipeline for {story_id}")
     _run_full_pipeline_mode(root, story_id, args)
