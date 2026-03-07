@@ -75,7 +75,6 @@ class VrewFileExporter(VrewExporter):
         voice_emotion = str(preset.get("emotion") or "neutral")
 
         files: List[Dict[str, Any]] = []
-
         assets: Dict[str, Any] = {}
         tts_clip_infos: Dict[str, Any] = {}
         clips: List[Dict[str, Any]] = []
@@ -102,8 +101,8 @@ class VrewFileExporter(VrewExporter):
                 "fileLocation": "IN_MEMORY",
             })
 
-            asset_id = str(uuid4())
-            assets[asset_id] = {
+            image_asset_id = str(uuid4())
+            assets[image_asset_id] = {
                 "mediaId": image_media_id,
                 "type": "image",
                 "importType": "image",
@@ -146,7 +145,7 @@ class VrewFileExporter(VrewExporter):
                     "sourceFileType": "TTS",
                     "fileLocation": "IN_MEMORY",
                 })
-                tts_clip_infos[audio_media_id] = {
+                tts_info = {
                     "text": {
                         "raw": tts_text,
                         "processed": tts_text,
@@ -157,8 +156,11 @@ class VrewFileExporter(VrewExporter):
                     "volume": voice_volume,
                     "speed": voice_speed,
                     "pitch": voice_pitch,
-                    "emotion": voice_emotion,
+                    "version": "v1",
                 }
+                if voice_emotion:
+                    tts_info["emotion"] = voice_emotion
+                tts_clip_infos[audio_media_id] = tts_info
 
                 clips.append({
                     "words": words,
@@ -167,7 +169,7 @@ class VrewFileExporter(VrewExporter):
                         {"text": [{"insert": caption_text + "\n"}]},
                         {"text": [{"insert": "\n"}]},
                     ],
-                    "assetIds": [asset_id],
+                    "assetIds": [image_asset_id],
                     "dirty": {"blankDeleted": False, "caption": False, "video": False},
                     "translationModified": {"result": False, "source": False},
                     "id": str(uuid4()),
@@ -175,7 +177,7 @@ class VrewFileExporter(VrewExporter):
                 })
 
         project_obj = {
-            "version": int(preset.get("project_version", 16)),
+            "version": int(preset.get("project_version", 15)),
             "projectId": project_id,
             "files": files,
             "transcript": {
@@ -184,7 +186,7 @@ class VrewFileExporter(VrewExporter):
                         "id": str(uuid4()),
                         "clips": clips,
                     }
-                ]
+                ],
             },
             "props": {
                 "assets": assets,
@@ -241,8 +243,10 @@ class VrewFileExporter(VrewExporter):
         base = self._default_export_preset()
         template_path = os.getenv("VREW_TEMPLATE_PATH", "").strip()
         candidates: List[Path] = []
+        repo_root = Path(__file__).resolve().parents[2]
         if template_path:
             candidates.append(Path(template_path).expanduser())
+        candidates.append(repo_root / "reference" / "reference.vrew")
         candidates.append(out_dir / f"{story_name}.vrew")
 
         for p in candidates:
@@ -277,7 +281,7 @@ class VrewFileExporter(VrewExporter):
 
     def _default_export_preset(self) -> Dict[str, Any]:
         return {
-            "project_version": 16,
+            "project_version": 15,
             "speaker": {
                 "provider": "kt",
                 "gender": "female",
@@ -706,6 +710,7 @@ class VrewFileExporter(VrewExporter):
                 "id": str(uuid4()),
                 "text": tok,
                 "startTime": round(t, 3),
+                "playbackRate": 1,
                 "duration": round(d, 3),
                 "aligned": True,
                 "autoControl": False,
@@ -717,19 +722,19 @@ class VrewFileExporter(VrewExporter):
                 "mediaId": audio_media_id,
                 "audioIds": [audio_media_id],
                 "assetIds": [],
-                "playbackRate": 1,
             })
             t += d
 
-        # 샘플 .vrew와 유사하게 clip 종료 여백 단어를 추가한다.
+        # End pause(type=1) and clip end sentinel(type=2) match Vrew transcript pattern.
         words.append({
             "id": str(uuid4()),
             "text": "",
             "startTime": round(t, 3),
+            "playbackRate": 1,
             "duration": 0.7,
             "aligned": True,
             "autoControl": False,
-            "type": 0,
+            "type": 1,
             "softDelete": False,
             "originalDuration": 0.7,
             "originalStartTime": round(t, 3),
@@ -737,17 +742,17 @@ class VrewFileExporter(VrewExporter):
             "mediaId": audio_media_id,
             "audioIds": [audio_media_id],
             "assetIds": [],
-            "playbackRate": 1,
         })
         t += 0.7
         words.append({
             "id": str(uuid4()),
             "text": "",
             "startTime": round(t, 3),
+            "playbackRate": 1,
             "duration": 0.0,
             "aligned": True,
             "autoControl": False,
-            "type": 0,
+            "type": 2,
             "softDelete": False,
             "originalDuration": 0.0,
             "originalStartTime": round(t, 3),
@@ -755,7 +760,6 @@ class VrewFileExporter(VrewExporter):
             "mediaId": audio_media_id,
             "audioIds": [audio_media_id],
             "assetIds": [],
-            "playbackRate": 1,
         })
         return words, round(t, 3)
 
