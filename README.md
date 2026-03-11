@@ -12,3 +12,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
+```
+
+## 문서
+
+- CLI 사용설명서: `docs/cli_usage.md`

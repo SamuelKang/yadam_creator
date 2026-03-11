@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from google import genai
 from google.genai import types
+from yadam.model_defaults import DEFAULT_TEXT_LLM_MODEL
+from yadam.nlp._llm_timeout import call_with_timeout
 
 
 # --------- Structured Output (Pydantic Schema) ---------
@@ -93,12 +95,13 @@ class LLMExtractionResult(BaseModel):
 # --------- Extractor ---------
 @dataclass
 class LLMExtractorConfig:
-    model: str = "gemini-2.5-flash"
+    model: str = DEFAULT_TEXT_LLM_MODEL
     max_script_chars: int = 0  # 0 이하면 전체 대본 사용
     chunk_chars: int = 1000
     chunk_overlap_chars: int = 120
     max_scenes_per_chunk: int = 40
     temperature: float = 0.1
+    timeout_sec: float = 120.0
 
 
 class LLMEntityExtractor:
@@ -245,6 +248,8 @@ class LLMEntityExtractor:
                 "장면 태깅(scene_tags)에서 characters/places는 반드시 name_canonical을 사용한다.",
                 "scene_prompts에는 입력 장면목록의 scene_id마다 clip 이미지용 짧은 영어 프롬프트를 넣는다(한두 문장).",
                 "scene_prompts는 텍스트/말풍선/자막/로고/워터마크 금지, 만화 패널 분할 금지, 장면의 감정/행동/구도를 포함한다.",
+                "scene_prompts에는 직접 대사, 인용부호(\"...\", '...'), 이름:대사 형식(예: 윤이: ...)을 넣지 않는다.",
+                "scene_prompts는 한국 배경 인물의 얼굴을 한국인/동아시아 이목구비로 유지하고, 실사/서양 모델 느낌을 피한다.",
                 "불확실하면 notes에 짧게 남긴다.",
                 "각 인물에 대해 gender(남/여/불명)와 age_stage(유아/아동/청소년/청년/중년/노년/불명)를 가능한 범위에서 채운다.",
                 "근거가 약하면 불명으로 두되, age_hint에 대본 근거 문구(있으면)를 넣는다.",
@@ -281,19 +286,22 @@ class LLMEntityExtractor:
             seed_place_candidates=seed_place_candidates,
         )
 
-        resp = self.client.models.generate_content(
-            model=self.cfg.model,
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part(text=system + "\n\n" + json.dumps(user, ensure_ascii=False))]
+        resp = call_with_timeout(
+            lambda: self.client.models.generate_content(
+                model=self.cfg.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=system + "\n\n" + json.dumps(user, ensure_ascii=False))]
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=self.cfg.temperature,
+                    response_mime_type="application/json",
+                    response_schema=LLMExtractionResult,
                 ),
-            ],
-            config=types.GenerateContentConfig(
-                temperature=self.cfg.temperature,
-                response_mime_type="application/json",
-                response_schema=LLMExtractionResult,
             ),
+            self.cfg.timeout_sec,
         )
 
         text = getattr(resp, "text", None)

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from google import genai
 from google.genai import types
+from yadam.model_defaults import DEFAULT_TEXT_LLM_MODEL
+from yadam.nlp._llm_timeout import call_with_timeout
 
 
 class LLMPrevSummary(BaseModel):
@@ -36,9 +38,10 @@ class LLMScenePromptResult(BaseModel):
 
 @dataclass
 class LLMScenePromptConfig:
-    model: str = "gemini-2.5-flash"
+    model: str = DEFAULT_TEXT_LLM_MODEL
     temperature: float = 0.2
     max_scene_chars: int = 900  # scene_text 길이 제한
+    timeout_sec: float = 90.0
 
 
 class LLMScenePromptBuilder:
@@ -93,12 +96,20 @@ class LLMScenePromptBuilder:
             "배경은 빈 화면처럼 두지 말고 문맥에 맞는 서사 디테일(장터 군중, 작업하는 사람, 이동하는 행인, 생활 소품)을 적정량 넣는다.",
             "characters 입력에 species가 있으면 해당 종을 반드시 유지한다(인간/소/개/말 등).",
             "같은 인물(name/variant)은 장면 간 외형 일관성을 유지한다(성별/연령대/얼굴 인상/헤어/복식 핵심 앵커 유지). 인물 입력에 없는 새 헤어스타일/머리장식/복식 컨셉을 임의로 추가하지 않는다.",
+            "같은 인물과 같은 variant가 인접 장면에 반복되면, 복장 상태와 변장 컨셉을 유지한다. 같은 ragged beggar disguise면 다음 컷에서도 같은 누더기 옷, 같은 머리/모자 계열, 같은 색 계열을 유지하고 새 의상으로 갈아입히지 않는다.",
+            "variant나 wardrobe_anchors에 disguise/변복/복장 정보가 있으면 그것을 최우선 복식 고정 규칙으로 따르고, scene마다 다른 옷으로 재해석하지 않는다.",
             "대본 문장을 그대로 복사하지 말고, 장면 묘사로 재구성한다. 시대지시가 있으면 조선시대 의복/소품/건축/분위기를 유지한다.",
             "직접 대사나 인용부호(\"...\", '...')를 prompt에 쓰지 않는다. 등장인물의 말은 입 모양, 손짓, 표정, 긴장감, 권위적인 태도 같은 시각적 행동으로만 번역한다.",
             "shouting \"...\" 또는 saying \"...\" 같은 직접 발화문 대신 mouth open in a forceful shout, appears to be announcing his authority, urgent expression, lips parted as if calling out 같은 행동 묘사를 사용한다.",
             "말풍선/대화풍선/텍스트 박스/내레이션 박스/캡션 박스/효과음 문자(SFX)를 절대 그리지 않는다. 빈 풍선 형태도 금지한다.",
             "패널 분할, 검은 테두리 프레임, 상단/하단 여백(흰색/검은색 레터박스 포함), 만화 페이지 레이아웃을 절대 만들지 않는다.",
             "굶주림, 질병, 절망, 혹한 같은 비참한 상황은 과장된 신체 왜곡이나 공포물 같은 기괴한 얼굴로 표현하지 않는다. 수척함은 절제된 표정, 마른 실루엣, 해진 옷, 황량한 환경으로 전달한다.",
+            "인체 해부학 일관성을 강하게 유지한다: 사람은 머리 1개, 몸통 1개, 팔 2개, 손 2개, 다리 2개, 발 2개를 기본으로 하며 추가 팔다리/중복 손가락/뒤틀린 관절/붙은 손을 만들지 않는다.",
+            "손이 프레임에 크게 보일 때는 손 형태를 단순하고 명확하게 유지한다. 손가락 수는 자연스럽게 5개 기준으로 보이도록 하고, 겹침 때문에 기괴해 보이면 포즈를 단순화한다.",
+            "동물도 해부학 일관성을 유지한다: 소/개/말 등은 다리 수 4개를 기본으로 하며 여분의 다리/머리/꼬리를 만들지 않는다.",
+            "인물/동물/가구/소품 사이의 물리적 경계를 명확히 유지한다. 몸이 의자/상/문/벽/바구니를 관통하거나 서로 융합된 형태를 만들지 않는다.",
+            "앉기/기대기/무릎꿇기 장면에서는 접촉면(contact point)을 분명히 묘사하고, 골반/등/팔 위치가 가구 구조와 자연스럽게 맞물리도록 한다.",
+            "가림(occlusion)은 단순한 앞뒤 가림으로만 표현한다. 신체 일부가 가구 내부에 끼어든 것처럼 보이는 잘린 단면, 비정상 접합, 떠 있는 팔다리를 금지한다.",
             "아동으로 표시된 인물은 학령기 어린이 비율과 얼굴로 유지한다. 갓난아기, 포대기 아기, 유아 비율, 과도하게 둥근 영아 얼굴로 바꾸지 않는다. 대본이 명시하지 않으면 아기를 품에 안은 자세로 축소 해석하지 않는다.",
             "약 5세~7세 아동은 걸을 수 있고 스스로 앉거나 서는 학령기 어린이로 묘사한다. 보호자의 품에 있더라도 신생아처럼 포대기에 싸거나 한 팔로 들어 올린 아기 자세로 그리지 않는다.",
             "장면에 두 아이, 남매, sibling pair처럼 인원 수가 명시되면 정확히 그 수만 묘사하고, 여분의 아이를 추가하지 않는다.",
@@ -148,6 +159,8 @@ class LLMScenePromptBuilder:
                 "화로가 명시되지 않은 한 방 한가운데의 노출 화구를 만들지 않는다.",
                 "실내 난방/물 데우기 장면이 필요하면 서양식 벽난로 대신 작은 화로, 숯불 화로, 부엌 쪽 솥과 난방 기척처럼 조선식 소품으로 번역한다.",
                 "벽면에 붙은 fireplace, 굴뚝형 벽난로, stone hearth 같은 서양식 난방 구조는 사용하지 않는다.",
+                "실내 생활방에서는 장작 더미를 직접 태우는 큰 불(캠프파이어/모닥불/타오르는 통나무 화염)을 절대 만들지 않는다.",
+                "실내 불빛은 등잔, 초, 작은 화로의 약한 불씨 중심으로 제한하고, 천장까지 치솟는 화염 연출은 금지한다.",
             ])
 
         user = {
@@ -181,19 +194,22 @@ class LLMScenePromptBuilder:
             },
         }
 
-        resp = self.client.models.generate_content(
-            model=self.cfg.model,
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part(text=system + "\n\n" + json.dumps(user, ensure_ascii=False))]
-                )
-            ],
-            config=types.GenerateContentConfig(
-                temperature=self.cfg.temperature,
-                response_mime_type="application/json",
-                response_schema=LLMScenePromptResult,
+        resp = call_with_timeout(
+            lambda: self.client.models.generate_content(
+                model=self.cfg.model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=system + "\n\n" + json.dumps(user, ensure_ascii=False))]
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=self.cfg.temperature,
+                    response_mime_type="application/json",
+                    response_schema=LLMScenePromptResult,
+                ),
             ),
+            self.cfg.timeout_sec,
         )
 
         text = getattr(resp, "text", None)

@@ -36,8 +36,15 @@ from yadam.gen.image_tasks import generate_with_fallback, RetryPolicy
 from yadam.export.vrew_exporter import VrewExporter, VrewExportRequest
 from yadam.nlp.llm_scene_prompt import LLMScenePromptBuilder, LLMScenePromptConfig
 from yadam.nlp.llm_prompt_rewrite import LLMPromptRewriter, LLMPromptRewriteConfig
+from yadam.nlp.llm_scene_binding import LLMSceneBindingPlanner, LLMSceneBindingConfig
+from yadam.model_defaults import DEFAULT_TEXT_LLM_MODEL
 
 T = TypeVar("T")
+
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
 
 @dataclass
 class PipelineConfig:
@@ -48,6 +55,10 @@ class PipelineConfig:
     input_script_path: str
     json_name: str = "project.json"
     interactive: bool = True
+    llm_model: str = DEFAULT_TEXT_LLM_MODEL
+    stop_after_tag_scene: bool = False
+    stop_after_place_refs: bool = False
+    stop_after_clips: bool = False
 
     # ✅ scene split 파라미터(요구사항 반영)
     scene_min_s: int = 2
@@ -78,6 +89,16 @@ def _default_image_meta() -> Dict[str, Any]:
     }
 
 
+def _cleanup_stale_error_file(meta: Dict[str, Any], ok_path: Path, err_path: Path) -> bool:
+    if (meta.get("status") == "ok") and ok_path.exists() and err_path.exists():
+        try:
+            err_path.unlink()
+            return True
+        except Exception:
+            return False
+    return False
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -100,11 +121,384 @@ class Orchestrator:
         self.clip_style = get_style(self.profiles, "k_webtoon_clip")
 
         self.scene_prompt_llm = LLMScenePromptBuilder(
-            LLMScenePromptConfig(model="gemini-2.5-flash", temperature=0.2)
+            LLMScenePromptConfig(model=cfg.llm_model, temperature=0.2)
         )
         self.prompt_rewriter = LLMPromptRewriter(
-            LLMPromptRewriteConfig(model="gemini-2.5-flash", temperature=0.2)
+            LLMPromptRewriteConfig(model=cfg.llm_model, temperature=0.2)
         )
+        self.scene_binding_planner = LLMSceneBindingPlanner(
+            LLMSceneBindingConfig(model=cfg.llm_model, temperature=0.1)
+        )
+        self.story_id = Path(cfg.input_script_path).stem
+        self.variant_overrides = self._load_variant_overrides()
+        self.scene_bindings = self._load_scene_bindings()
+
+    def _load_variant_overrides(self) -> List[Dict[str, Any]]:
+        if yaml is None:
+            return []
+        try:
+            root = Path(self.cfg.input_script_path).resolve().parents[1]
+        except Exception:
+            return []
+        candidates = [
+            root / "stories" / f"{self.story_id}_variant_overrides.yaml",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                rows = raw.get("variant_overrides", [])
+                return [r for r in rows if isinstance(r, dict)]
+            except Exception:
+                continue
+        return []
+
+    def _load_scene_bindings(self) -> List[Dict[str, Any]]:
+        if yaml is None:
+            return []
+        try:
+            root = Path(self.cfg.input_script_path).resolve().parents[1]
+        except Exception:
+            return []
+        candidates = [
+            root / "stories" / f"{self.story_id}_scene_bindings.yaml",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                rows = raw.get("scene_bindings", [])
+                return [r for r in rows if isinstance(r, dict)]
+            except Exception:
+                continue
+        return []
+
+    def _has_story_rule_file_for_resume(self) -> bool:
+        """
+        non-interactive 1차 실행에서 place 단계 후 멈췄다가,
+        사용자가 Codex로 규칙 파일을 만든 뒤 재실행할 때 계속 진행하기 위한 체크.
+        """
+        try:
+            root = Path(self.cfg.input_script_path).resolve().parents[1]
+        except Exception:
+            return False
+        candidates = [
+            root / "stories" / f"{self.story_id}_variant_overrides.yaml",
+            root / "stories" / f"{self.story_id}_scene_bindings.yaml",
+        ]
+        return any(p.exists() for p in candidates)
+
+    def _parse_scene_selector(self, selector: Any) -> List[int]:
+        out: List[int] = []
+        if selector is None:
+            return out
+        if isinstance(selector, int):
+            return [selector]
+        if isinstance(selector, list):
+            for x in selector:
+                try:
+                    out.append(int(x))
+                except Exception:
+                    continue
+            return sorted(set(out))
+        s = str(selector).strip()
+        if not s:
+            return out
+        if "-" in s:
+            a, b = s.split("-", 1)
+            try:
+                i0 = int(a.strip())
+                i1 = int(b.strip())
+            except Exception:
+                return out
+            if i0 > i1:
+                i0, i1 = i1, i0
+            return list(range(i0, i1 + 1))
+        try:
+            return [int(s)]
+        except Exception:
+            return out
+
+    def _apply_variant_overrides(
+        self,
+        scenes: List[Dict[str, Any]],
+        chars: List[Dict[str, Any]],
+        overrides: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        rows = self.variant_overrides if overrides is None else overrides
+        if not rows:
+            return
+
+        id_set = {str(c.get("id")) for c in chars if c.get("id")}
+        name_to_id = {
+            str(c.get("name")).strip(): str(c.get("id"))
+            for c in chars
+            if c.get("id") and str(c.get("name", "")).strip()
+        }
+        sid_map = {int(s.get("id")): s for s in scenes if s.get("id") is not None}
+
+        for row in rows:
+            story_id = str(row.get("story_id") or "").strip()
+            if story_id and story_id != self.story_id:
+                continue
+
+            char_key = str(row.get("character") or "").strip()
+            if not char_key:
+                continue
+            cid = char_key if char_key in id_set else name_to_id.get(char_key, "")
+            if not cid:
+                continue
+
+            variant = str(row.get("variant") or "").strip()
+            target_ids = set(self._parse_scene_selector(row.get("scenes")))
+            chapter_title = str(row.get("chapter_title") or "").strip()
+
+            for sid, s in sid_map.items():
+                if target_ids and sid not in target_ids:
+                    continue
+                if chapter_title and str(s.get("chapter_title") or "").strip() != chapter_title:
+                    continue
+
+                chars2 = s.get("characters", [])
+                if not isinstance(chars2, list):
+                    chars2 = []
+                if cid not in chars2:
+                    chars2.append(cid)
+                s["characters"] = chars2
+
+                inst = s.get("character_instances", [])
+                if not isinstance(inst, list):
+                    inst = []
+                replaced = False
+                new_inst: List[Dict[str, str]] = []
+                for it in inst:
+                    if not isinstance(it, dict):
+                        continue
+                    if str(it.get("char_id") or "") == cid:
+                        if not replaced:
+                            new_inst.append({"char_id": cid, "variant": variant})
+                            replaced = True
+                        continue
+                    new_inst.append({"char_id": str(it.get("char_id") or ""), "variant": str(it.get("variant") or "")})
+                if not replaced:
+                    new_inst.append({"char_id": cid, "variant": variant})
+                s["character_instances"] = new_inst
+
+    def _apply_scene_bindings(
+        self,
+        scenes: List[Dict[str, Any]],
+        chars: List[Dict[str, Any]],
+        places: List[Dict[str, Any]],
+        bindings: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        rows = self.scene_bindings if bindings is None else bindings
+        if not rows:
+            return
+
+        char_id_set = {str(c.get("id")) for c in chars if c.get("id")}
+        char_name_to_id = {
+            str(c.get("name")).strip(): str(c.get("id"))
+            for c in chars
+            if c.get("id") and str(c.get("name", "")).strip()
+        }
+        place_id_set = {str(p.get("id")) for p in places if p.get("id")}
+        place_name_to_id = {
+            str(p.get("name")).strip(): str(p.get("id"))
+            for p in places
+            if p.get("id") and str(p.get("name", "")).strip()
+        }
+        sid_map = {int(s.get("id")): s for s in scenes if s.get("id") is not None}
+
+        def resolve_char_entry(entry: Any) -> Tuple[str, str]:
+            if isinstance(entry, dict):
+                key = str(
+                    entry.get("char_id")
+                    or entry.get("character")
+                    or entry.get("name")
+                    or ""
+                ).strip()
+                var = str(entry.get("variant") or "").strip()
+            else:
+                key = str(entry or "").strip()
+                var = ""
+            if not key:
+                return "", var
+            cid = key if key in char_id_set else char_name_to_id.get(key, "")
+            return cid, var
+
+        def resolve_place_entry(entry: Any) -> str:
+            key = str(entry or "").strip()
+            if not key:
+                return ""
+            return key if key in place_id_set else place_name_to_id.get(key, "")
+
+        for row in rows:
+            story_id = str(row.get("story_id") or "").strip()
+            if story_id and story_id != self.story_id:
+                continue
+
+            target_ids = set(self._parse_scene_selector(row.get("scenes")))
+            chapter_title = str(row.get("chapter_title") or "").strip()
+            mode = str(row.get("mode") or "add").strip().lower()
+            replace_mode = (mode == "replace")
+
+            resolved_chars: List[Tuple[str, str]] = []
+            for ent in (row.get("characters") or []):
+                cid, var = resolve_char_entry(ent)
+                if cid:
+                    resolved_chars.append((cid, var))
+
+            resolved_places: List[str] = []
+            for ent in (row.get("places") or []):
+                pid = resolve_place_entry(ent)
+                if pid and pid not in resolved_places:
+                    resolved_places.append(pid)
+
+            for sid, s in sid_map.items():
+                if target_ids and sid not in target_ids:
+                    continue
+                if chapter_title and str(s.get("chapter_title") or "").strip() != chapter_title:
+                    continue
+
+                scene_chars = s.get("characters", [])
+                if not isinstance(scene_chars, list):
+                    scene_chars = []
+                scene_places = s.get("places", [])
+                if not isinstance(scene_places, list):
+                    scene_places = []
+                scene_inst = s.get("character_instances", [])
+                if not isinstance(scene_inst, list):
+                    scene_inst = []
+
+                if replace_mode and resolved_chars:
+                    scene_chars = [cid for cid, _ in resolved_chars]
+                    scene_inst = [{"char_id": cid, "variant": var} for cid, var in resolved_chars]
+                else:
+                    for cid, var in resolved_chars:
+                        if cid not in scene_chars:
+                            scene_chars.append(cid)
+                        replaced = False
+                        new_inst: List[Dict[str, str]] = []
+                        for it in scene_inst:
+                            if not isinstance(it, dict):
+                                continue
+                            iid = str(it.get("char_id") or "")
+                            ivar = str(it.get("variant") or "")
+                            if iid == cid:
+                                if not replaced:
+                                    new_inst.append({"char_id": cid, "variant": var})
+                                    replaced = True
+                                continue
+                            new_inst.append({"char_id": iid, "variant": ivar})
+                        if not replaced:
+                            new_inst.append({"char_id": cid, "variant": var})
+                        scene_inst = new_inst
+
+                if replace_mode and resolved_places:
+                    scene_places = list(resolved_places)
+                else:
+                    for pid in resolved_places:
+                        if pid not in scene_places:
+                            scene_places.append(pid)
+
+                s["characters"] = scene_chars
+                s["character_instances"] = scene_inst
+                s["places"] = scene_places
+
+    def _update_used_by_scenes(
+        self,
+        scenes: List[Dict[str, Any]],
+        chars: List[Dict[str, Any]],
+        places: List[Dict[str, Any]],
+    ) -> None:
+        char_usage: Dict[str, List[int]] = {}
+        place_usage: Dict[str, List[int]] = {}
+        for s in scenes:
+            sid = int(s.get("id", 0))
+            if sid <= 0:
+                continue
+            for cid in (s.get("characters") or []):
+                if isinstance(cid, str):
+                    char_usage.setdefault(cid, []).append(sid)
+            for pid in (s.get("places") or []):
+                if isinstance(pid, str):
+                    place_usage.setdefault(pid, []).append(sid)
+
+        for c in chars:
+            cid = str(c.get("id") or "")
+            used = sorted(set(char_usage.get(cid, [])))
+            c["used_by_scenes"] = used
+
+        for p in places:
+            pid = str(p.get("id") or "")
+            used = sorted(set(place_usage.get(pid, [])))
+            p["used_by_scenes"] = used
+
+    def _plan_auto_scene_rules(
+        self,
+        *,
+        script_text: str,
+        scenes: List[Dict[str, Any]],
+        chars: List[Dict[str, Any]],
+        places: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        # LLM 입력 최소화: scene/character/place 핵심 필드만 전달
+        scene_payload: List[Dict[str, Any]] = []
+        for s in scenes:
+            scene_payload.append({
+                "id": int(s.get("id", 0)),
+                "chapter_title": str(s.get("chapter_title") or ""),
+                "text": str(s.get("text") or "")[:280],
+                "characters": list(s.get("characters") or []),
+                "places": list(s.get("places") or []),
+                "character_instances": list(s.get("character_instances") or []),
+            })
+
+        char_payload: List[Dict[str, Any]] = []
+        for c in chars:
+            char_payload.append({
+                "id": str(c.get("id") or ""),
+                "name": str(c.get("name") or ""),
+                "variants": list(c.get("variants") or []),
+                "age_stage": str(c.get("age_stage") or ""),
+                "aliases": list(c.get("aliases") or [])[:8],
+            })
+
+        place_payload: List[Dict[str, Any]] = []
+        for p in places:
+            place_payload.append({
+                "id": str(p.get("id") or ""),
+                "name": str(p.get("name") or ""),
+                "aliases": list(p.get("aliases") or [])[:8],
+            })
+
+        try:
+            planned = self._call_with_rate_limit_retry(
+                lambda: self.scene_binding_planner.plan(
+                    story_id=self.story_id,
+                    script_text=script_text,
+                    scenes=scene_payload,
+                    characters=char_payload,
+                    places=place_payload,
+                ),
+                label="[auto-rules] scene binding planner",
+                max_attempts=3,
+            )
+            if not isinstance(planned, dict):
+                return {"variant_overrides": [], "scene_bindings": [], "notes": ["invalid planner response"]}
+            return {
+                "variant_overrides": list(planned.get("variant_overrides") or []),
+                "scene_bindings": list(planned.get("scene_bindings") or []),
+                "notes": list(planned.get("notes") or []),
+            }
+        except Exception as e:
+            return {
+                "variant_overrides": [],
+                "scene_bindings": [],
+                "notes": [f"planner_failed: {e}"],
+            }
 
     def _confirm(self, title: str, hint: str = "") -> bool:
         if not getattr(self.cfg, "interactive", True):
@@ -298,20 +692,40 @@ class Orchestrator:
 
     def _filter_anchors_by_stage(self, anchors: List[str], age_stage: str) -> List[str]:
         out = self._clean_str_list(anchors)
-        if not self._is_child_stage(age_stage):
-            return out
+        stage = (age_stage or "").strip()
 
-        # 아동 장면에서 성인/청년 계열 단서를 제거해 외형 일관성 붕괴를 막는다.
-        adult_markers = (
-            "청년", "성인", "아가씨", "처자", "장성", "중년", "노년", "어른",
-            "청년기", "성인기", "훌쩍 자라",
-        )
-        child_only: List[str] = []
-        for s in out:
-            if any(m in s for m in adult_markers):
-                continue
-            child_only.append(s)
-        return child_only
+        # 아동 장면: 성인화/영아화/고강도 병증 단서를 줄인다.
+        if stage == "아동":
+            adult_markers = (
+                "청년", "성인", "아가씨", "처자", "장성", "중년", "노년", "어른",
+                "청년기", "성인기", "훌쩍 자라", "성장 후", "늠름한", "듬직한",
+            )
+            risky_markers = (
+                "피 섞인", "피가", "유혈", "토혈", "시신", "사망", "죽어",
+                "불덩이 같은 이마", "신음", "창백한 얼굴", "병색", "숨이 넘어",
+                "포대기에 싸인", "갓난", "신생아", "영아", "유아",
+                "업힌", "업혀", "등에 업", "등에 메", "안긴", "안겨",
+            )
+            child_only: List[str] = []
+            for s in out:
+                if any(m in s for m in adult_markers):
+                    continue
+                if any(m in s for m in risky_markers):
+                    continue
+                child_only.append(s)
+            return child_only
+
+        # 청소년/청년 장면: 아동/영아/업힘 단서를 제거해 stage 충돌을 막는다.
+        if stage in ("청소년", "청년"):
+            child_markers = (
+                "아동", "유아", "영아", "갓난", "신생아", "일곱 살", "5세", "7세",
+                "작은 몸집", "통통한 볼살", "포대기", "포대기에 싸인",
+                "업힌", "업혀", "등에 업",
+            )
+            adult_only = [s for s in out if not any(m in s for m in child_markers)]
+            return adult_only
+
+        return out
 
     def _normalize_age_hint(self, age_stage: str, raw_hint: str) -> str:
         if self._is_child_stage(age_stage):
@@ -337,6 +751,38 @@ class Orchestrator:
             return preferred + [s for s in keep if s not in preferred]
 
         return out
+
+    def _augment_anchors_with_variant(self, anchors: List[str], variant: str) -> List[str]:
+        out = self._clean_str_list(anchors)
+        v = (variant or "").strip()
+        if not v:
+            return out
+
+        # Scene-level variant text often carries the strongest disguise cue.
+        # Promote it into stable outfit/appearance anchors so adjacent clips
+        # keep the same disguise instead of inventing a fresh costume concept.
+        if v not in out:
+            out.insert(0, v)
+
+        if ("변복" in v or "복장" in v or "차림" in v or "분장" in v) and "same disguise continuity" not in out:
+            out.insert(1, "same disguise continuity")
+        return out
+
+    def _filter_risky_character_sheet_anchors(self, anchors: List[str]) -> List[str]:
+        """
+        캐릭터 단독 시트에서는 고강도 병증/유혈/사망 뉘앙스를 제거해
+        EMPTY_IMAGE_BYTES/안전 차단 확률을 낮춘다.
+        """
+        out = self._clean_str_list(anchors)
+        blocked = (
+            "피 섞인", "유혈", "토혈", "시신", "사망", "죽어", "숨이 넘어",
+            "불덩이 같은 이마", "신음", "고꾸라진", "피가",
+            # A군(비참/피폐) 질감 유도 단서 축소
+            "병색", "창백", "허연 입술", "가느다란 숨", "힘없이", "아픈 모습", "떨고 있는",
+            "흙먼지", "해진", "누더기", "잿빛 안색", "후들거리는", "절박한", "오열", "애원",
+            "짓무른", "상처", "피 맺힌", "초라한",
+        )
+        return [s for s in out if not any(k in s for k in blocked)]
 
     def _scene_character_score(
         self,
@@ -518,6 +964,7 @@ class Orchestrator:
             ok_path = self.paths.clips_dir / f"{sid:03d}.jpg"
             err_path = self.paths.clips_dir / f"{sid:03d}_error.jpg"
             meta = s.get("image") if isinstance(s.get("image"), dict) else _default_image_meta()
+            _cleanup_stale_error_file(meta, ok_path, err_path)
 
             done_ok = (meta.get("status") == "ok") and ok_path.exists() and (not err_path.exists())
             if not done_ok:
@@ -593,6 +1040,9 @@ class Orchestrator:
             })
             self.db.save(project)
             print(f"[3/7] project reused: chars={len(project.get('characters',[]))} places={len(project.get('places',[]))} scenes={len(project.get('scenes',[]))}")
+            if self.cfg.stop_after_tag_scene:
+                print("[3.5/7] stop_after_tag_scene: stop before LLM extract and later stages")
+                return project
         else:
             # ------------------------------------------------------------
             # ✅ 새로 split/LLM/merge 수행
@@ -659,34 +1109,39 @@ class Orchestrator:
                 })
 
             # LLM 기반 추출/정규화/태깅
-            llm_debug: Dict[str, Any] = {"enabled": True, "ok": False}
+            llm_debug: Dict[str, Any] = {"enabled": (not self.cfg.stop_after_tag_scene), "ok": False}
             llm_out: Optional[Dict[str, Any]] = None
-            try:
-                extractor = LLMEntityExtractor(
-                    LLMExtractorConfig(model="gemini-2.5-flash", temperature=0.1)
-                )
-                def _do_llm_call():
-                    return extractor.extract(
-                        era_profile=self.cfg.era_profile,
-                        style_profile=self.cfg.style_profile,
-                        script_text=clean_text,
-                        scenes=[{"id": sc.id, "text": sc.text} for sc in scenes],
-                        seed_char_candidates=[c.name for c in seed_chars],
-                        seed_place_candidates=[p.name for p in seed_places],
+            if self.cfg.stop_after_tag_scene:
+                llm_debug["skipped"] = True
+                llm_debug["reason"] = "stop_after_tag_scene"
+                print("[2/7] LLM extract: skipped by stop_after_tag_scene")
+            else:
+                try:
+                    extractor = LLMEntityExtractor(
+                        LLMExtractorConfig(model=self.cfg.llm_model, temperature=0.1)
                     )
-                llm_out = self._call_with_heartbeat(
-                    _do_llm_call,
-                    title="[2/7] LLM extract(remote)",
-                    interval_s=1.0,
-                    dot=".",
-                )
-                llm_debug["ok"] = True
-                llm_debug["result"] = llm_out
-            except Exception as e:
-                llm_debug["ok"] = False
-                llm_debug["error"] = str(e)
-                llm_out = None
-            print("[2/7] LLM extract: ok" if llm_debug["ok"] else f"[2/7] LLM extract: fail: {llm_debug.get('error')}")
+                    def _do_llm_call():
+                        return extractor.extract(
+                            era_profile=self.cfg.era_profile,
+                            style_profile=self.cfg.style_profile,
+                            script_text=clean_text,
+                            scenes=[{"id": sc.id, "text": sc.text} for sc in scenes],
+                            seed_char_candidates=[c.name for c in seed_chars],
+                            seed_place_candidates=[p.name for p in seed_places],
+                        )
+                    llm_out = self._call_with_heartbeat(
+                        _do_llm_call,
+                        title="[2/7] LLM extract(remote)",
+                        interval_s=1.0,
+                        dot=".",
+                    )
+                    llm_debug["ok"] = True
+                    llm_debug["result"] = llm_out
+                except Exception as e:
+                    llm_debug["ok"] = False
+                    llm_debug["error"] = str(e)
+                    llm_out = None
+                print("[2/7] LLM extract: ok" if llm_debug["ok"] else f"[2/7] LLM extract: fail: {llm_debug.get('error')}")
 
 # ===== orchestrator.py (PART 3/4) =====
             def init_or_merge(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -702,7 +1157,7 @@ class Orchestrator:
                     "scene_max_s": self.cfg.scene_max_s,
                     "scene_base_len": self.cfg.scene_base_len,
                     "phase": "structure_fixed",
-                    "phase_detail": "fresh_split_merge",                    
+                    "phase_detail": ("through_tag_scene" if self.cfg.stop_after_tag_scene else "fresh_split_merge"),
                 })
                 data["project"]["llm_extract"] = llm_debug
 
@@ -965,8 +1420,45 @@ class Orchestrator:
 
             project = self.db.upsert(init_or_merge)
             print(f"[3/7] project upserted: chars={len(project.get('characters',[]))} places={len(project.get('places',[]))} scenes={len(project.get('scenes',[]))}")
+            if self.cfg.stop_after_tag_scene:
+                self.db.save(project)
+                print("[3.5/7] stop_after_tag_scene: saved rule-based structure and stop before LLM-dependent stages")
+                return project
 
 # ===== orchestrator.py (PART 4/4) =====
+        scenes_for_rules = [s for s in project.get("scenes", []) if isinstance(s, dict)]
+        chars_for_rules = [c for c in project.get("characters", []) if isinstance(c, dict)]
+        places_for_rules = [p for p in project.get("places", []) if isinstance(p, dict)]
+
+        auto_rules = self._plan_auto_scene_rules(
+            script_text=clean_text,
+            scenes=scenes_for_rules,
+            chars=chars_for_rules,
+            places=places_for_rules,
+        )
+        project.setdefault("project", {})
+        project["project"]["auto_scene_rules"] = auto_rules
+
+        # Optional scene-level locks from story-specific YAML
+        # 1) auto rules generated by LLM from script/scenes
+        self._apply_variant_overrides(
+            scenes_for_rules,
+            chars_for_rules,
+            overrides=list(auto_rules.get("variant_overrides") or []),
+        )
+        self._apply_scene_bindings(
+            scenes_for_rules,
+            chars_for_rules,
+            places_for_rules,
+            bindings=list(auto_rules.get("scene_bindings") or []),
+        )
+
+        # 2) manual lock rules from stories/<story-id>_*.yaml (higher priority)
+        self._apply_variant_overrides(scenes_for_rules, chars_for_rules)
+        self._apply_scene_bindings(scenes_for_rules, chars_for_rules, places_for_rules)
+        self._update_used_by_scenes(scenes_for_rules, chars_for_rules, places_for_rules)
+        self.db.save(project)
+
         retry = RetryPolicy(max_attempts=3, policy_rewrite_max_level=3)
 
         # 최신 맵 (project 기준)
@@ -1044,6 +1536,7 @@ class Orchestrator:
                     vmeta = meta_map.get(variant_key)
                     if not isinstance(vmeta, dict):
                         vmeta = _default_image_meta()
+                    _cleanup_stale_error_file(vmeta, ok_path, err_path)
 
                     if vmeta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
                         skip += 1
@@ -1068,6 +1561,7 @@ class Orchestrator:
 
                     age_stage_for_prompt = (var if var else age_stage)
                     anchors2 = self._filter_anchors_by_stage(list(anchors), age_stage_for_prompt)
+                    anchors2 = self._filter_risky_character_sheet_anchors(anchors2)
                     if self._is_child_stage(age_stage_for_prompt):
                         anchors2.append("나이: 약 5세(아동)")
 
@@ -1076,6 +1570,7 @@ class Orchestrator:
                         wardrobe_anchors = []
                     wardrobe_anchors = self._filter_anchors_by_stage(wardrobe_anchors, age_stage_for_prompt)
                     wardrobe_anchors = self._filter_anchors_by_variant(wardrobe_anchors, var)
+                    wardrobe_anchors = self._filter_risky_character_sheet_anchors(wardrobe_anchors)
 
                     prompt = build_character_prompt(
                         self.era, self.char_style, name, anchors2,
@@ -1112,6 +1607,14 @@ class Orchestrator:
                     c["images"] = meta_map
                     c["image"] = vmeta
                     self.db.save(project)
+
+                    # non-interactive: 캐릭터 레퍼런스 실패 시 즉시 중단
+                    if (not self.cfg.interactive) and vmeta.get("status") != "ok":
+                        print(
+                            "[4/7] STOP: non-interactive mode requires character/place references. "
+                            f"character generation failed: {ok_path.name}"
+                        )
+                        return project
 
             print(f"[4/7] characters done in {self._fmt_eta(time.time()-section_t0)}: total={total} skip={skip} ok={gen_ok} err={gen_err} regen={regen}")
 
@@ -1164,6 +1667,7 @@ class Orchestrator:
 
                 ok_path = self.paths.places_dir / f"{pid}_{safe}.jpg"
                 err_path = self.paths.places_dir / f"{pid}_{safe}_error.jpg"
+                _cleanup_stale_error_file(img_meta, ok_path, err_path)
 
                 if img_meta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
                     p_skip += 1
@@ -1208,6 +1712,14 @@ class Orchestrator:
 
                 self.db.save(project)
 
+                # non-interactive: 장소 레퍼런스 실패 시 즉시 중단
+                if (not self.cfg.interactive) and (p["image"] or {}).get("status") != "ok":
+                    print(
+                        "[5/7] STOP: non-interactive mode requires character/place references. "
+                        f"place generation failed: {ok_path.name}"
+                    )
+                    return project
+
             print(f"[5/7] places done in {self._fmt_eta(time.time()-p_t0)}: total={p_total} skip={p_skip} ok={p_ok} err={p_err} regen={p_regen}")
 
             # ✅ 생성 완료 후: 폴더 자동 열기 + 사용자가 눈으로 확인
@@ -1221,6 +1733,23 @@ class Orchestrator:
                     return project
         else:
             print("[5/7] places: SKIP (already complete)")
+
+        if self.cfg.stop_after_place_refs:
+            project.setdefault("project", {})
+            project["project"]["phase"] = "refs_ready"
+            project["project"]["phase_detail"] = "through_place_refs"
+            self.db.save(project)
+            print("[5.5/7] stop_after_place_refs: stop after character/place reference generation")
+            return project
+
+        # non-interactive 모드: character/place 생성 후 규칙 파일이 없으면 clip 단계 전에 중단
+        if (not self.cfg.interactive) and (not self._has_story_rule_file_for_resume()):
+            print(
+                f"[5.5/7] STOP: non-interactive mode paused after character/place generation. "
+                f"Please request Codex to create story rule files."
+            )
+            print(f"{self.story_id} 인물 규칙 파일 생성을 codex에게 요청 해주세요")
+            return project
 
         # ------------------------------------------------------------
         # (6/7) clips generate (only if work left)
@@ -1333,6 +1862,7 @@ class Orchestrator:
                     return "\n".join([
                         "Character continuity lock:",
                         "Keep each character identity consistent across scenes; do not change age/gender/face/hair/outfit core anchors.",
+                        "If the same character and variant continue across adjacent scenes, keep the exact same disguise, headwear, silhouette, and outfit color family unless the scene text explicitly signals a change.",
                         *lines,
                     ])
 
@@ -1373,11 +1903,19 @@ class Orchestrator:
                         self._clean_str_list(cobj.get("visual_anchors") or []),
                         age_stage2,
                     )
+                    visual_anchors2 = self._augment_anchors_with_variant(
+                        visual_anchors2,
+                        variant,
+                    )
                     wardrobe_anchors2 = self._filter_anchors_by_stage(
                         self._clean_str_list(cobj.get("wardrobe_anchors") or []),
                         age_stage2,
                     )
                     wardrobe_anchors2 = self._filter_anchors_by_variant(
+                        wardrobe_anchors2,
+                        variant,
+                    )
+                    wardrobe_anchors2 = self._augment_anchors_with_variant(
                         wardrobe_anchors2,
                         variant,
                     )
@@ -1453,6 +1991,68 @@ class Orchestrator:
 
             print(f"[6/7] clips: total={s_total}")
 
+            def _normalize_problematic_clip_terms(prompt_text: str) -> str:
+                ptxt = str(prompt_text or "").strip()
+                if not ptxt:
+                    return ptxt
+                # "hut" 계열 표현이 실내 장작불/모닥불로 과도 해석되는 경향을 줄인다.
+                replacements = [
+                    ("dark hut", "dim Joseon room with ondol floor, lit by an oil lamp"),
+                    ("rustic hut", "small Joseon room with ondol floor and paper sliding doors"),
+                    ("humble hut", "modest Joseon room with ondol floor"),
+                    ("forest hut", "rural Joseon dwelling with ondol-heated room"),
+                    ("small hut", "small Joseon room with ondol floor"),
+                    ("secluded hut", "secluded Joseon room with ondol floor"),
+                    ("inside the hut", "inside a Joseon room with ondol floor and oil-lamp lighting"),
+                    ("Inside the hut", "Inside a Joseon room with ondol floor and oil-lamp lighting"),
+                    ("hut door", "wooden sliding door of a Joseon room"),
+                    ("hut", "Joseon room with ondol floor"),
+                ]
+                out = ptxt
+                for src, dst in replacements:
+                    out = out.replace(src, dst)
+                return out
+
+            def _sanitize_clip_prompt_text(prompt_text: str) -> str:
+                ptxt = str(prompt_text or "").strip()
+                if not ptxt:
+                    return ptxt
+                # Remove direct quoted speech to reduce speech-bubble/text rendering.
+                ptxt = re.sub(r"[\"“][^\"”\n]{1,260}[\"”]", " ", ptxt)
+                # Remove "Name: ..." style dialogue fragments.
+                ptxt = re.sub(r"(?:^|\s)[가-힣A-Za-z]{1,16}\s*[:：]\s*[^.\n]{1,180}", " ", ptxt)
+                # Remove explicit speaking verbs followed by quoted payload patterns.
+                ptxt = re.sub(r"\b(?:saying|says|said|shouting|shouts|yelling|yells)\b[^.\n]{0,120}", " ", ptxt, flags=re.IGNORECASE)
+                ptxt = re.sub(r"\s+", " ", ptxt).strip()
+                return ptxt
+
+            def _apply_clip_safety_constraints(prompt_text: str) -> str:
+                ptxt = _sanitize_clip_prompt_text(_normalize_problematic_clip_terms(prompt_text))
+                if not ptxt:
+                    return ptxt
+                if "[Safety constraints]" in ptxt:
+                    return ptxt
+                indoor_tail = ""
+                ltxt = ptxt.lower()
+                if ("ondol floor" in ltxt) or ("joseon room" in ltxt):
+                    indoor_tail = (
+                        "\n- Keep this as a Joseon indoor living room (ondol-style), not a barn/shed interior.\n"
+                        "- No exposed-barn rafters, no central campfire, no burning firewood pile inside the room."
+                    )
+                safety_tail = (
+                    "[Safety constraints]\n"
+                    "- Keep anatomy coherent: one head, one torso, two arms, two hands, two legs per person.\n"
+                    "- No extra limbs, fused fingers, broken joints, or duplicated body parts.\n"
+                    "- Keep physical boundaries clear: no body-object intersection or merged geometry.\n"
+                    "- Humans must remain outside wardrobes/drawers/cabinets/chests; only objects can be inside."
+                    "\n- Keep a stylized 2D Korean manhwa/webtoon look; do not render photorealistic, DSLR, or live-action style."
+                    "\n- No visible text, letters, subtitles, captions, narration boxes, speech bubbles, or quote marks in the image."
+                    "\n- Convey dialogue only through facial expression, gaze, posture, and hand gesture."
+                    "\n- Keep character faces Korean/East-Asian in proportion and styling; avoid Western facial morphology."
+                    f"{indoor_tail}"
+                )
+                return f"{ptxt}\n\n{safety_tail}"
+
             def _scene_reference_image_paths(s_obj: Dict[str, Any]) -> List[str]:
                 char_refs: List[str] = []
                 char_ids2 = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
@@ -1514,6 +2114,7 @@ class Orchestrator:
                 sid = int(s.get("id", 0))
                 ok_path = self.paths.clips_dir / f"{sid:03d}.jpg"
                 err_path = self.paths.clips_dir / f"{sid:03d}_error.jpg"
+                _cleanup_stale_error_file(img_meta, ok_path, err_path)
 
                 if img_meta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
                     s_skip += 1
@@ -1603,6 +2204,7 @@ class Orchestrator:
                     print(f"  - prompt: FAIL -> {err_path.name} ({err_msg})")
                     continue
 
+                prompt = _apply_clip_safety_constraints(prompt)
                 img_meta["prompt_original"] = img_meta.get("prompt_original") or prompt[:500]
                 img_meta["prompt_used"] = prompt
                 ref_paths = _scene_reference_image_paths(s)
@@ -1753,6 +2355,14 @@ class Orchestrator:
             )
         else:
             print("[6/7] clips: SKIP (already complete)")
+
+        if self.cfg.stop_after_clips:
+            project.setdefault("project", {})
+            project["project"]["phase"] = "clips_ready"
+            project["project"]["phase_detail"] = "through_clips"
+            self.db.save(project)
+            print("[6.5/7] stop_after_clips: stop after clip generation before export")
+            return project
 
         # ------------------------------------------------------------
         # (7/7) exporter

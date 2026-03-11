@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -11,9 +12,59 @@ import sys
 import time
 from pathlib import Path
 
+from yadam.model_defaults import (
+    DEFAULT_COMFY_MODEL,
+    DEFAULT_GEMINI_IMAGE_MODEL,
+    DEFAULT_TEXT_LLM_MODEL,
+    DEFAULT_VERTEX_IMAGE_MODEL,
+    resolve_gemini_image_model,
+)
+
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
+
+
+class _TeeWriter(io.TextIOBase):
+    def __init__(self, *streams: io.TextIOBase) -> None:
+        self._streams = streams
+
+    def write(self, s: str) -> int:
+        for stream in self._streams:
+            stream.write(s)
+            stream.flush()
+        return len(s)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+
+_RUN_LOG_STREAM: io.TextIOBase | None = None
+
+
+def _enable_run_log(work_dir: Path, story_id: str) -> Path:
+    global _RUN_LOG_STREAM
+
+    if _RUN_LOG_STREAM is not None:
+        return Path(getattr(_RUN_LOG_STREAM, "name", ""))
+
+    logs_dir = work_dir / story_id / "logs"
+    _ensure_dir(logs_dir)
+    log_path = logs_dir / f"{story_id}.log"
+    log_stream = log_path.open("a", encoding="utf-8", buffering=1)
+    log_stream.write(f"[INFO] run log started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_stream.flush()
+
+    sys.stdout = _TeeWriter(sys.__stdout__, log_stream)
+    sys.stderr = _TeeWriter(sys.__stderr__, log_stream)
+    _RUN_LOG_STREAM = log_stream
+    print(f"[INFO] run log: {log_path}")
+    return log_path
+
+
+def _resolve_llm_model(raw: str = "") -> str:
+    return (raw or "").strip() or DEFAULT_TEXT_LLM_MODEL
 
 
 def _confirm_clean_workdir(target: Path) -> bool:
@@ -322,6 +373,7 @@ def _generate_story_chapter_with_retry(
     chapter_title: str,
     chapter_outline: str,
     previous_chapter_text: str,
+    llm_model: str,
     max_attempts: int = 3,
 ) -> str:
     last_err: Exception | None = None
@@ -338,6 +390,7 @@ def _generate_story_chapter_with_retry(
                 chapter_title=chapter_title,
                 chapter_outline=chapter_outline,
                 previous_chapter_text=previous_chapter_text,
+                llm_model=llm_model,
             )
         except Exception as err:
             last_err = err
@@ -357,6 +410,7 @@ def _generate_synopsis_file_with_retry(
     synopsis_input: str,
     out_path: Path,
     *,
+    llm_model: str,
     max_attempts: int = 3,
 ) -> None:
     last_err: Exception | None = None
@@ -364,7 +418,7 @@ def _generate_synopsis_file_with_retry(
         try:
             if attempt > 1:
                 print(f"[INFO] synopsis retry {attempt}/{max_attempts}")
-            _generate_synopsis_file(root, synopsis_input, out_path)
+            _generate_synopsis_file(root, synopsis_input, out_path, llm_model=llm_model)
             return
         except Exception as err:
             last_err = err
@@ -452,6 +506,11 @@ def main() -> None:
     ap.add_argument("--era", default="joseon_yadam")
     ap.add_argument("--style", default="k_webtoon")
     ap.add_argument(
+        "--llm-model",
+        default="",
+        help=f"텍스트 LLM 모델 오버라이드. 비우면 기본값 {DEFAULT_TEXT_LLM_MODEL} 사용",
+    )
+    ap.add_argument(
         "--image-api",
         choices=["vertex_imagen", "gemini_flash_image", "comfyui"],
         default="vertex_imagen",
@@ -476,6 +535,21 @@ def main() -> None:
         "--clean-workdir",
         action="store_true",
         help="실행 전에 work/<story-id>/ 를 삭제하고 처음부터 재생성",
+    )
+    ap.add_argument(
+        "--through-tag-scene",
+        action="store_true",
+        help="대본 정규화, scene 분할, seed 추출, tag_scene까지만 수행하고 중단",
+    )
+    ap.add_argument(
+        "--through-place-refs",
+        action="store_true",
+        help="캐릭터/장소 레퍼런스 이미지(7/8단계)까지만 수행하고 clip/export 전에 중단",
+    )
+    ap.add_argument(
+        "--through-clips",
+        action="store_true",
+        help="clip 이미지 생성(9단계)까지만 수행하고 export 전에 중단",
     )
     ap.add_argument(
         "--vrew-clip-max-chars",
@@ -511,8 +585,14 @@ def main() -> None:
 
     if synopsis_input:
         story_id = _run_synopsis_mode(root, synopsis_input)
+        _enable_run_log(work_dir, story_id)
         print(f"[INFO] step 1/3: generating synopsis for {story_id}")
-        if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
+        if not _run_story_synopsis_mode(
+            root,
+            story_id,
+            non_interactive=args.non_interactive,
+            llm_model=_resolve_llm_model(args.llm_model),
+        ):
             return
         if args.non_interactive:
             print(f"[INFO] step 2/3: generating story for {story_id}")
@@ -521,6 +601,7 @@ def main() -> None:
                 story_id,
                 target_chars=500,
                 non_interactive=True,
+                llm_model=_resolve_llm_model(args.llm_model),
             ):
                 return
             print(f"[INFO] step 3/3: running image and .vrew pipeline for {story_id}")
@@ -533,9 +614,16 @@ def main() -> None:
     if "/" in story_id or "\\" in story_id or ".." in story_id:
         raise ValueError(f"invalid story-id: {story_id}")
 
+    _enable_run_log(work_dir, story_id)
+
     if args.make_synopsis or args.make_sysnopsis:
         print(f"[INFO] step 1/1: generating synopsis for {story_id}")
-        _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive)
+        _run_story_synopsis_mode(
+            root,
+            story_id,
+            non_interactive=args.non_interactive,
+            llm_model=_resolve_llm_model(args.llm_model),
+        )
         return
 
     if args.make_story:
@@ -545,29 +633,46 @@ def main() -> None:
             story_id,
             target_chars=int(args.make_story or 500),
             non_interactive=args.non_interactive,
+            llm_model=_resolve_llm_model(args.llm_model),
         )
         return
 
     print(f"[INFO] step 1/3: generating synopsis for {story_id}")
-    if not _run_story_synopsis_mode(root, story_id, non_interactive=args.non_interactive):
+    if not _run_story_synopsis_mode(
+        root,
+        story_id,
+        non_interactive=args.non_interactive,
+        llm_model=_resolve_llm_model(args.llm_model),
+    ):
         return
+    skip_story_generation = False
     if not args.non_interactive:
         proceed = _confirm_continue_default_yes_or_all("시놉시스 생성을 확인했습니다. story 생성으로 진행할까요?")
         if proceed == "no":
-            print("[INFO] stopped after synopsis generation")
-            return
+            skip_story_generation = True
+            print("[INFO] skip story generation by user choice")
         if proceed == "all":
             args.non_interactive = True
             print("[INFO] switch to non-interactive mode for remaining steps")
 
-    print(f"[INFO] step 2/3: generating story for {story_id}")
-    if not _run_make_story_mode(
-        root,
-        story_id,
-        target_chars=500,
-        non_interactive=args.non_interactive,
-    ):
-        return
+    if not skip_story_generation:
+        print(f"[INFO] step 2/3: generating story for {story_id}")
+        if not _run_make_story_mode(
+            root,
+            story_id,
+            target_chars=500,
+            non_interactive=args.non_interactive,
+            llm_model=_resolve_llm_model(args.llm_model),
+        ):
+            return
+    else:
+        story_path = root / "stories" / f"{story_id}.txt"
+        if not story_path.exists():
+            print(f"[INFO] story generation was skipped, but story file is missing: {story_path}")
+            print("[INFO] stopped before image/.vrew pipeline")
+            return
+        print(f"[INFO] step 2/3: skipped (reuse existing story: {story_path})")
+
     if not args.non_interactive:
         proceed = _confirm_continue_default_yes_or_all("대본 생성을 확인했습니다. 이미지 및 .vrew 생성을 진행할까요?")
         if proceed == "no":
@@ -593,7 +698,7 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> str:
     return story_id
 
 
-def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool) -> bool:
+def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool, llm_model: str) -> bool:
     stories_dir = root / "stories"
     title_path = stories_dir / f"{story_id}.title"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
@@ -620,16 +725,28 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
                 print(f"[INFO] synopsis up-to-date: {synopsis_path}")
                 return True
         if (not non_interactive) and (not _confirm_overwrite(synopsis_path)):
-            print("[INFO] synopsis generation cancelled by user")
-            return False
+            print(f"[INFO] keep existing synopsis and continue: {synopsis_path}")
+            return True
 
     print(f"[INFO] generating synopsis from title: {title_path.name}")
-    _generate_synopsis_file_with_retry(root, title_text, synopsis_path)
+    _generate_synopsis_file_with_retry(
+        root,
+        title_text,
+        synopsis_path,
+        llm_model=llm_model,
+    )
     _atomic_write_text(title_hash_path, title_hash + "\n")
     return True
 
 
-def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_interactive: bool) -> bool:
+def _run_make_story_mode(
+    root: Path,
+    story_id: str,
+    *,
+    target_chars: int,
+    non_interactive: bool,
+    llm_model: str,
+) -> bool:
     stories_dir = root / "stories"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
     story_path = stories_dir / f"{story_id}.txt"
@@ -729,6 +846,7 @@ def _run_make_story_mode(root: Path, story_id: str, *, target_chars: int, non_in
             chapter_title=chapter_title,
             chapter_outline=chapter_outline,
             previous_chapter_text=previous_chapter_text,
+            llm_model=llm_model,
         )
         generated_chapters.append(chapter_text)
         previous_chapter_text = chapter_text
@@ -788,19 +906,24 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
         input_script_path=str(script_path),
         json_name="project.json",
         interactive=(not args.non_interactive),
+        llm_model=_resolve_llm_model(args.llm_model),
+        stop_after_tag_scene=bool(args.through_tag_scene),
+        stop_after_place_refs=bool(args.through_place_refs),
+        stop_after_clips=bool(args.through_clips),
         vrew_clip_max_chars=max(1, int(args.vrew_clip_max_chars)),
     )
 
     if args.image_api == "vertex_imagen":
-        model = args.image_model.strip() or "imagen-4.0-generate-001"
+        model = args.image_model.strip() or DEFAULT_VERTEX_IMAGE_MODEL
         img_client = VertexImagenClient(model=model)
         workflow_path = ""
     elif args.image_api == "gemini_flash_image":
-        model = args.image_model.strip() or "gemini-2.5-flash-image"
+        requested_model = args.image_model.strip() or DEFAULT_GEMINI_IMAGE_MODEL
+        model, remapped_from = resolve_gemini_image_model(requested_model)
         img_client = GeminiFlashImageClient(model=model)
         workflow_path = ""
     else:
-        model = args.image_model.strip() or "sd_xl_base_1.0.safetensors"
+        model = args.image_model.strip() or DEFAULT_COMFY_MODEL
         default_comfy_workflow = (
             root / "yadam" / "config" / "comfy_workflows" / "yadam_api_sdxl_base_fast_placeholders.json"
         )
@@ -824,7 +947,13 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
         )
 
     print(f"[INFO] starting image and .vrew pipeline for {story_id}")
+    print(f"[INFO] llm_model={cfg.llm_model}")
+    print(f"[INFO] through_tag_scene={cfg.stop_after_tag_scene}")
+    print(f"[INFO] through_place_refs={cfg.stop_after_place_refs}")
+    print(f"[INFO] through_clips={cfg.stop_after_clips}")
     print(f"[INFO] image_api={args.image_api}, image_model={model}, image_client={img_client.__class__.__name__}")
+    if args.image_api == "gemini_flash_image" and 'remapped_from' in locals() and remapped_from:
+        print(f"[WARN] requested unsupported Gemini image model '{remapped_from}', fallback to '{model}'")
     if args.image_api == "comfyui":
         print(f"[INFO] comfy_url={args.comfy_url.strip()}, comfy_workflow={workflow_path}")
     exporter = VrewFileExporter()
@@ -833,7 +962,7 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
     orch.run()
 
 
-def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> None:
+def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path, *, llm_model: str) -> None:
     from google import genai
     from google.genai import types
 
@@ -862,9 +991,9 @@ def _generate_synopsis_file(root: Path, synopsis_input: str, out_path: Path) -> 
     )
 
     client = genai.Client()
-    print("[INFO] synopsis LLM request -> gemini-2.5-flash")
+    print(f"[INFO] synopsis LLM request -> {llm_model}")
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=llm_model,
         contents=[
             types.Content(
                 role="user",
@@ -893,6 +1022,7 @@ def _generate_story_chapter(
     chapter_title: str,
     chapter_outline: str,
     previous_chapter_text: str,
+    llm_model: str,
 ) -> str:
     from google import genai
     from google.genai import types
@@ -909,9 +1039,9 @@ def _generate_story_chapter(
     )
 
     client = genai.Client()
-    print(f"[INFO] chapter LLM request -> gemini-2.5-flash (Chapter {chapter_no})")
+    print(f"[INFO] chapter LLM request -> {llm_model} (Chapter {chapter_no})")
     resp = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=llm_model,
         contents=[
             types.Content(
                 role="user",

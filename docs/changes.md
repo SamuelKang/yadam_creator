@@ -32,6 +32,17 @@
 
 변경 이력
 
+[2026-03-11] continuity 검수용 contact sheet 추가
+
+- 목적
+	- Codex 세션에서 고해상도 clip 여러 장을 연속으로 `Viewed Image` 하면 응답 payload가 커져 `413 Payload Too Large`가 날 수 있어, continuity 검수 전용 축소본 1장으로 대체하기 위함.
+- 변경
+	- `scripts/make_contact_sheet.py` 추가.
+	- `work/<story-id>/clips/*.jpg` 여러 장을 읽어 `work/<story-id>/out/<story-id>_clips_<start>_<end>_sheet.jpg` 한 장으로 저장.
+	- 각 장면에 번호 라벨을 붙이고, 기본 썸네일 폭과 JPEG 품질을 낮춰 세션 검수용 페이로드를 줄임.
+- 사용
+	- `python3 scripts/make_contact_sheet.py --story-id story25 --scenes 112-118`
+
 [2026-02-23] story_id 기반 입력/출력 디렉토리 규칙 확정
 	•	구분: 요구사항/설계
 	•	변경 내용:
@@ -755,6 +766,78 @@
 	•	구분: 구현
 	•	변경 내용:
 	•	`LLMEntityExtractor`를 단일 대본 요청 방식에서 `chunk_chars=1000` 기준의 다회 호출 방식으로 변경.
+[2026-03-11] 텍스트 Gemini 기본 모델을 `gemini-3-flash-preview`로 승격하고 CLI override 추가
+
+- 목적
+	- 기존 `gemini-2.5-flash` 하드코딩을 줄이고, 새 Gemini 계열 모델을 synopsis/story/scene 관련 전 경로에서 일관되게 사용할 수 있게 하기 위함.
+- 변경
+	- `yadam/model_defaults.py`
+	- 텍스트/이미지 기본 모델 상수 추가.
+	- `yadam/cli.py`
+	- `--llm-model` 옵션 추가.
+	- synopsis 생성, chapter 생성, 전체 파이프라인 실행 시 동일한 텍스트 LLM 모델을 전달하도록 변경.
+	- 실행 로그에 `llm_model=...` 출력 추가.
+	- `yadam/pipeline/orchestrator.py`
+	- scene prompt, prompt rewrite, scene binding, entity extract 단계가 `PipelineConfig.llm_model`을 사용하도록 변경.
+	- `yadam/nlp/llm_scene_prompt.py`, `yadam/nlp/llm_prompt_rewrite.py`, `yadam/nlp/llm_scene_binding.py`, `yadam/nlp/llm_extract.py`
+	- 텍스트 LLM 기본값을 중앙 상수로 통일.
+	- `yadam/gen/gemini_client.py`
+	- 이미지 기본 모델도 중앙 상수를 사용하도록 정리.
+	- `docs/cli_usage.md`, `docs/requirements.md`
+	- `--llm-model` 사용법과 기본값 문서화.
+- 참고
+	- 요청 표현의 `gemini 3.1 fast`와 달리, 현재 코드에 추가한 공식 모델명은 `gemini-3-flash-preview` 기준이다.
+- 검증
+	- `python -m py_compile yadam/cli.py yadam/model_defaults.py yadam/pipeline/orchestrator.py yadam/nlp/llm_scene_prompt.py yadam/nlp/llm_prompt_rewrite.py yadam/nlp/llm_scene_binding.py yadam/nlp/llm_extract.py yadam/gen/gemini_client.py`
+
+[2026-03-11] `--through-tag-scene` 추가: tag_scene까지의 Python 전처리만 수행
+
+- 목적
+	- story 파일이 이미 있을 때, LLM 구조 추출과 이미지 생성 없이 Python 전처리(scene split + seed 추출 + `tag_scene`)까지만 실행할 수 있게 하기 위함.
+- 변경
+	- `yadam/cli.py`
+	- `--through-tag-scene` 옵션 추가.
+	- 실행 로그에 `through_tag_scene` 상태 출력 추가.
+	- `yadam/pipeline/orchestrator.py`
+	- `PipelineConfig.stop_after_tag_scene` 추가.
+	- `reuse_scenes` 경로와 fresh split 경로 모두에서 `stop_after_tag_scene`면 LLM extract 이전에 중단하도록 변경.
+	- 이 모드에서는 `project.project.llm_extract`를 skipped로 기록하고, `phase_detail`을 `through_tag_scene`로 저장.
+	- `docs/cli_usage.md`
+	- 사용 예시 추가.
+- 검증
+	- `python -m py_compile yadam/cli.py yadam/pipeline/orchestrator.py`
+
+[2026-03-11] `--through-place-refs` 추가: 7/8단계 레퍼런스 생성까지만 수행
+
+- 목적
+	- 캐릭터/장소 레퍼런스 이미지 생성만 끝내고, clip 생성과 export 전에 안정적으로 중단할 수 있게 하기 위함.
+- 변경
+	- `yadam/cli.py`
+	- `--through-place-refs` 옵션 추가.
+	- 실행 로그에 `through_place_refs` 상태 출력 추가.
+	- `yadam/pipeline/orchestrator.py`
+	- `PipelineConfig.stop_after_place_refs` 추가.
+	- 장소 생성 단계 직후 `stop_after_place_refs`면 `phase=refs_ready`, `phase_detail=through_place_refs`를 저장하고 중단하도록 변경.
+	- `docs/cli_usage.md`
+	- 사용 예시 추가.
+- 검증
+	- `python -m py_compile yadam/cli.py yadam/pipeline/orchestrator.py`
+
+[2026-03-11] Gemini 이미지 모델 호환성 보정: `gemini-3-flash-preview` 요청 시 지원 모델로 fallback
+
+- 목적
+	- `gemini-3-flash-preview`가 이미지 생성 지원 모델이 아니어서 400 오류가 발생하므로, Gemini 이미지 경로를 지원 모델로 안정화하기 위함.
+- 변경
+	- `yadam/model_defaults.py`
+	- `DEFAULT_GEMINI_IMAGE_MODEL`을 `gemini-2.5-flash-image`로 복구.
+	- `gemini-3-flash-preview` 요청 시 `gemini-2.5-flash-image`로 보정하는 fallback 함수 추가.
+	- `yadam/cli.py`, `yadam/gen/gemini_client.py`
+	- Gemini 이미지 모델 요청값을 보정하고 warning을 출력하도록 변경.
+	- `docs/cli_usage.md`, `docs/requirements.md`
+	- Gemini 이미지 기본 모델 예시와 요구사항 문구를 지원 모델 기준으로 갱신.
+- 검증
+	- `python -m py_compile yadam/model_defaults.py yadam/gen/gemini_client.py yadam/cli.py`
+
 	•	대본을 겹침(overlap) 포함 청크로 분할하고, 각 청크마다 해당 구간과 겹치는 scene 요약만 선택해 LLM에 전달.
 	•	청크 분할은 단순 글자 슬라이딩이 아니라 문장 경계(마침표/물음표/느낌표/줄바꿈) 기준으로 근사 1000자를 맞추도록 보강.
 	•	청크별 결과를 병합하도록 로직 추가:
@@ -819,3 +902,196 @@
 	- clip 생성 단계에서 `scene.llm_clip_prompt`가 있으면 우선 사용하고, 없을 때만 기존 `LLMScenePromptBuilder` 호출.
 - 검증
 	- `python -m py_compile yadam/nlp/llm_extract.py yadam/pipeline/orchestrator.py` 통과.
+
+[2026-03-10] story14 "박 노인" 이름-이미지 매핑 점검 결과 문서화
+
+- 구분
+	- 운영 문서화
+- 변경 내용
+	- `docs/cli_usage.md`에 "이름-이미지 매핑 점검(Story14: 박 노인 사례)" 섹션 추가.
+	- 점검 결과를 문서로 고정:
+		- `project.json`에서 `char_004(name=박 노인)`가 `char_004_박_노인_노년.jpg`와 연결됨.
+		- scene 텍스트의 `"박 노인"` 구간에서 `scene.characters`/`scene.character_instances`에 `char_004`가 반영됨.
+	- 코드 동작 기준을 문서로 명시:
+		- `_apply_scene_bindings()`의 이름→`char_id` 매핑 기준(`strip()` 적용).
+		- 클립 참조 이미지 선택 시 `character_instances.variant` 우선, 없으면 기본 `image.path` fallback.
+	- 재점검용 CLI 명령(빠른 확인 스니펫) 추가.
+- 변경 이유
+	- story14 운영 중 제기된 `"박 노인"` 연결 안정성 질문에 대해, 동일 기준으로 재검증 가능하도록 운영 문서에 고정하기 위함.
+[2026-03-11] make_vrew skill에 clip prompt 점검 + 9단계(stop before export) 경로 추가
+
+- 목적
+	- `make_vrew` hybrid workflow가 step 8에서 멈추지 않고, Codex가 clip prompt를 먼저 검수한 뒤 step 9 clip 생성까지만 안전하게 진행하도록 확장.
+- 변경
+	- `yadam/cli.py`
+		- `--through-clips` 옵션 추가.
+	- `yadam/pipeline/orchestrator.py`
+		- `PipelineConfig.stop_after_clips` 추가.
+		- clip 생성 완료 직후 `stop_after_clips`면 `project.phase=clips_ready`, `phase_detail=through_clips` 저장 후 export 전에 중단.
+	- `skills/make_vrew/SKILL.md`
+		- step 9 전 Codex clip prompt review 단계 추가.
+		- step 9 실행 후 clip 에러까지 자동 점검하도록 흐름 확장.
+	- `skills/make_vrew/scripts/review_clip_prompts.py`
+		- `llm_clip_prompt`에서 대사형/visible text 유도 패턴을 탐지하는 점검 스크립트 추가.
+	- `skills/make_vrew/scripts/run_through_clips.sh`
+		- `python -m yadam.cli --story-id <id> --through-clips --non-interactive --image-api gemini_flash_image` 래퍼 추가.
+	- `skills/make_vrew/references/clip_prompt_review.md`
+		- Codex 수동 검수 기준 추가.
+	- `docs/cli_usage.md`
+		- `--through-clips` 사용법 문서화.
+- 이유
+	- clip 단계는 이미지 생성 전 마지막 텍스트 제어 지점이라, 대사/캡션 유도 프롬프트를 Codex가 사전 정리하는 운영 흐름이 필요함.
+
+[2026-03-11] make_vrew skill에서 clip 전부 성공 시 Python export 자동 연결
+
+- 목적
+	- hybrid workflow가 step 9 clip 성공 후 수동 개입 없이 Python `.vrew` export까지 이어지도록 정리.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- step 9 이후 clip 에러가 없으면 export를 자동 수행하도록 절차 추가.
+	- `skills/make_vrew/scripts/run_export_after_clips.sh`
+		- 일반 CLI를 non-interactive로 재실행해 기존 산출물을 재사용하면서 export 단계만 자연스럽게 통과하도록 래퍼 추가.
+- 이유
+	- 현재 CLI는 clip 완료 상태에서 재실행하면 export만 남는 구조이므로, 별도 export 전용 파라미터 없이도 안정적으로 Python export를 수행할 수 있음.
+
+[2026-03-11] CLI 진행 출력 stdout/stderr를 story별 logs 파일에도 tee
+
+- 목적
+	- 기존 `print` 기반 진행 상황을 콘솔에서만 보지 않고 `work/<story-id>/logs/` 아래 파일로도 남겨 실행 추적과 사후 점검을 쉽게 하기 위함.
+- 변경
+	- `yadam/cli.py`
+		- `_TeeWriter`, `_enable_run_log()` 추가.
+		- `story-id`가 결정되면 `work/<story-id>/logs/<story-id>.log`에 stdout/stderr를 함께 기록하도록 변경.
+- 이유
+	- 오케스트레이터와 CLI 전반이 `print` 중심이므로, 개별 로깅 호출을 뜯어고치지 않고도 story 단위 실행 로그를 안정적으로 남길 수 있음.
+
+[2026-03-11] shared `rules/` fallback 제거, 폴더를 `docs_user/`로 전환
+
+- 목적
+	- 현재 continuity rule 운영 기준이 `stories/<story-id>_*.yaml`로 정리되어 있으므로, 더 이상 사용하지 않는 shared `rules/*.yaml` fallback과 폴더를 정리.
+- 변경
+	- `yadam/pipeline/orchestrator.py`
+		- `rules/variant_overrides.yaml`, `rules/scene_bindings.yaml` fallback 로드 제거.
+		- 관련 주석을 story-specific YAML 기준으로 수정.
+	- `docs/cli_usage.md`, `skills/yadam-structure-rules/SKILL.md`
+		- `rules/` fallback 설명 제거.
+	- `rules/` 아래 YAML 파일 삭제 후 폴더명을 `docs_user/`로 변경.
+- 이유
+	- 실제 운영 흐름은 story별 YAML을 source of truth로 사용하고 있어 shared fallback이 오히려 혼동을 만들기 때문.
+
+[2026-03-11] make_vrew skill에 7/8단계 후 캐릭터 레퍼런스 점검 게이트 추가
+
+- 목적
+	- clip 단계 진입 전에 캐릭터 reference 이미지의 메타/파일 상태와 기본 continuity 품질을 먼저 확인해 잘못된 reference가 clip 생성에 전파되지 않도록 하기 위함.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- step 8 뒤에 character reference review 단계를 추가.
+		- 문제 발견 시 step 9를 중단하고 재생성 대상만 보고하도록 규칙 추가.
+	- `skills/make_vrew/scripts/check_character_refs.py`
+		- `project.json`의 character image meta/path/status와 stale `_error.jpg`를 검사하는 자동 점검 스크립트 추가.
+	- `skills/make_vrew/references/character_ref_review.md`
+		- Codex가 육안으로 확인할 continuity/variant/visible-text 기준 정리.
+- 이유
+	- story14 운영에서 인물 variant, 이름-이미지 연결, stale error file, reference 품질이 clip 단계 결과에 직접 영향을 준다는 점이 확인되었기 때문.
+
+[2026-03-11] make_vrew skill에 9단계 후 clip 이미지 점검 게이트 추가
+
+- 목적
+	- clip 생성 후 흰 배경/과다 밝기/파일 상태 이상 같은 저품질 clip을 export 전에 걸러내기 위함.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- step 9 후 clip image review 단계를 추가하고, 문제가 있으면 export를 중단하도록 규칙 강화.
+	- `skills/make_vrew/scripts/check_clip_images.py`
+		- clip 메타/파일 존재/stale error file과 밝기·white ratio를 기반으로 suspicious clip을 자동 탐지하는 스크립트 추가.
+	- `skills/make_vrew/references/clip_image_review.md`
+		- Codex가 육안으로 확인할 clip 품질 기준 정리.
+- 이유
+	- 실제 운영에서 일부 clip이 흰 배경처럼 보이는 사례가 있어, export 이전의 품질 게이트가 필요했기 때문.
+
+[2026-03-11] make_vrew step 9 전 clip prompt review에 place/환경 cue 부족 차단 규칙 추가
+
+- 목적
+	- `places=[]` 상태와 지나치게 generic한 clip prompt 때문에 흰 배경/무대형 clip이 나오는 문제를 step 9 전에 차단하기 위함.
+- 변경
+	- `skills/make_vrew/scripts/review_clip_prompts.py`
+		- `generic_prompt`, `missing_place_tag`, `missing_environment_cue`를 탐지하도록 강화.
+	- `skills/make_vrew/references/clip_prompt_review.md`
+		- concrete environment cue와 place grounding을 필수 review 기준으로 추가.
+	- `skills/make_vrew/SKILL.md`
+		- generic prompt와 place/environment 부족 scene은 step 9 전에 반드시 보강하도록 규칙 추가.
+- 이유
+	- story14의 특정 clip들이 place reference가 비어 있고 prompt도 generic해서 사실상 흰 배경 standing shot으로 수렴한 사례가 확인되었기 때문.
+
+[2026-03-11] make_vrew step 9 전 flagged scene은 Codex가 직접 보강 후 진행하도록 전환
+
+- 목적
+	- place 누락이나 generic prompt를 발견했을 때 단순 차단으로 끝내지 않고, Codex가 `project.json`을 보강해 step 9까지 이어서 진행하도록 workflow를 강화.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- clip prompt review 단계에서 flagged scene을 직접 repair한 뒤 재검사 후 진행하도록 절차 수정.
+	- `skills/make_vrew/references/clip_prompt_repair.md`
+		- `scene.places`와 `scene.llm_clip_prompt`를 보강하는 기준 추가.
+- 이유
+	- 흰 배경 clip 문제는 주로 structure 부족에서 비롯되므로, skill이 그 부족분을 메우는 쪽이 운영상 더 적합하기 때문.
+
+[2026-03-11] Gemini clip 이미지 호출 timeout 추가
+
+- 목적
+	- 특정 clip 이미지 요청이 Gemini API에서 장시간 반환되지 않을 때 파이프라인 전체가 무기한 멈추는 문제를 막기 위함.
+- 변경
+	- `yadam/gen/gemini_client.py`
+		- Gemini Flash Image `generate_content()` 호출을 daemon thread + 90초 timeout으로 감쌈.
+		- timeout 시 `TimeoutError`를 발생시켜 기존 transient/error 처리 흐름으로 복귀하도록 변경.
+- 이유
+	- story14 clip 재생성 중 scene 033에서 장시간 블로킹되며 이후 scene들이 진행되지 않는 현상이 확인되었기 때문.
+
+[2026-03-11] 시장 place prompt에 웹툰풍/군중 밀도 제한 추가
+
+- 목적
+	- `읍내 시장` 같은 market place 이미지가 다른 장소들보다 과도하게 반실사·과밀 군중 묘사로 치우치는 문제를 줄이기 위함.
+- 변경
+	- `yadam/prompts/builder.py`
+		- `시장/장터/저잣거리/시장통` 키워드가 포함된 place prompt에 대해:
+			- 군중 중간 밀도 유지
+			- 배경 인물 단순화
+			- 반실사 질감 억제
+			- 한국 웹툰풍 선화/평면 색면 우선
+			- 좌판/천막/항아리 등은 유지하되 과밀 구성 회피
+		  규칙 추가.
+- 이유
+	- story14의 `place_004_읍내_시장.jpg`가 다른 place reference보다 화풍이 많이 달라, market 전용 스타일 고정이 필요했기 때문.
+
+[2026-03-11] make_vrew skill에 place reference review + repair 단계 추가
+
+- 목적
+	- 7/8단계 뒤 place reference 자체의 의미/화풍 문제를 Codex가 보정하고, 필요 시 관련 clip까지 연쇄적으로 다시 묶을 수 있도록 workflow를 강화.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- character review 다음에 place review + repair 단계를 추가.
+	- `skills/make_vrew/scripts/check_place_refs.py`
+		- place image meta/path/status/stale error file를 검사하는 자동 점검 스크립트 추가.
+	- `skills/make_vrew/references/place_ref_review.md`
+		- place semantic/style drift, 불필요한 군중, dependent clip reset 기준을 정리.
+- 이유
+	- `산길` reference에 사람 행렬이 들어가 오누이 장면 전체가 어색해진 사례처럼, place 단계의 오류가 여러 clip에 전파될 수 있기 때문.
+- 2026-03-11
+  - `make_vrew` skill에 step 7/8 전 구조 sanity gate를 추가했다.
+  - 새 스크립트 `skills/make_vrew/scripts/check_structure_ready.py`가 generic role canonical name, human/animal species mismatch, protagonist reference 부재, scene character coverage 부족을 검사한다.
+  - `skills/make_vrew/SKILL.md`를 갱신해 `check_structure_ready.py` 통과 전에는 캐릭터/장소 reference 생성으로 진행하지 않도록 했다.
+  - `skills/make_vrew/scripts/check_character_refs.py`도 강화해 generic canonical name, species mismatch, protagonist reference 부재를 hard blocker로 본다.
+  - `story25` 같은 seed-quality character 구조(`나리/스님/아버지/아들`, `species=소`)가 있으면 이제 step 9 이전이 아니라 step 7/8 이전에 중단된다.
+  - 추가로 `make_vrew` skill을 갱신해 구조 이상을 발견하면 단순 중단하지 않고 `references/structure_repair.md` 기준으로 `project.json` 구조를 먼저 수리한 뒤, `check_structure_ready.py`를 재실행하고 step 7/8로 진행하도록 했다.
+
+[2026-03-11] 연속 장면 disguise continuity 강화
+
+- 목적
+	- 같은 인물/같은 variant가 연속 scene에 등장할 때 clip마다 복장과 머리장식이 바뀌는 문제를 줄이기 위함.
+- 변경
+	- `yadam/pipeline/orchestrator.py`
+		- scene `variant` 문구를 복식/외형 앵커로 승격하는 `_augment_anchors_with_variant()` 추가.
+		- clip continuity block에 “adjacent scenes with same character+variant must keep the exact same disguise/headwear/color family” 규칙 추가.
+		- clip prompt용 `visual_anchors`, `wardrobe_anchors` 생성 시 variant 기반 disguise 앵커를 자동 주입.
+	- `yadam/nlp/llm_scene_prompt.py`
+		- 같은 인물과 같은 variant가 인접 장면에서 반복되면 같은 변장/복색/머리 계열을 유지하고 scene마다 새 의상으로 재해석하지 말라는 규칙 추가.
+- 이유
+	- story25의 scene `040~042`처럼 같은 `숯칠한 얼굴과 남루한 거지 변복` variant인데도 clip별로 옷/모자/색이 크게 바뀌는 drift가 확인되었기 때문.

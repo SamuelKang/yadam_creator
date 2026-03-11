@@ -1,10 +1,17 @@
 # yadam/gen/gemini_client.py
 import base64
+import queue
+import threading
 from pathlib import Path
 from google import genai
 from google.genai import types
 from yadam.gen.image_client import ImageClient, ImageGenRequest, ImageGenResponse
 from yadam.core.errors import GenError, ErrorKind
+from yadam.model_defaults import (
+    DEFAULT_GEMINI_IMAGE_MODEL,
+    DEFAULT_VERTEX_IMAGE_MODEL,
+    resolve_gemini_image_model,
+)
 
 
 def _classify_genai_error(msg: str) -> ErrorKind:
@@ -40,8 +47,28 @@ def _guess_mime(path: Path) -> str:
     return "image/jpeg"
 
 
+def _call_with_timeout(fn, timeout_sec: float):
+    result_q: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+
+    def _runner() -> None:
+        try:
+            result_q.put((True, fn()))
+        except Exception as e:
+            result_q.put((False, e))
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join(timeout_sec)
+    if thread.is_alive():
+        raise TimeoutError(f"Gemini image request timeout after {timeout_sec:.0f}s")
+    ok, value = result_q.get_nowait()
+    if ok:
+        return value
+    raise value
+
+
 class VertexImagenClient(ImageClient):
-    def __init__(self, model: str = "imagen-4.0-generate-001") -> None:
+    def __init__(self, model: str = DEFAULT_VERTEX_IMAGE_MODEL) -> None:
         self.client = genai.Client()   # Vertex 모드: 환경변수 + 서비스계정
         self.model = model
 
@@ -105,9 +132,10 @@ class VertexImagenClient(ImageClient):
 
 
 class GeminiFlashImageClient(ImageClient):
-    def __init__(self, model: str = "gemini-2.5-flash-image") -> None:
+    def __init__(self, model: str = DEFAULT_GEMINI_IMAGE_MODEL) -> None:
         self.client = genai.Client()
-        self.model = model
+        self.model, self.original_model = resolve_gemini_image_model(model)
+        self.timeout_sec = 90.0
 
     def generate(self, req: ImageGenRequest) -> ImageGenResponse:
         try:
@@ -136,21 +164,45 @@ class GeminiFlashImageClient(ImageClient):
                 )
             parts.append(types.Part(text=prompt))
 
-            resp = self.client.models.generate_content(
-                model=self.model,
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=parts,
-                    )
-                ],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(
+            def _make_cfg(include_aspect_ratio: bool) -> types.GenerateContentConfig:
+                kwargs = dict(response_modalities=["IMAGE"])
+                if include_aspect_ratio:
+                    kwargs["image_config"] = types.ImageConfig(
                         aspect_ratio=req.aspect_ratio or "16:9",
+                    )
+                return types.GenerateContentConfig(**kwargs)
+
+            try:
+                resp = _call_with_timeout(
+                    lambda: self.client.models.generate_content(
+                        model=self.model,
+                        contents=[
+                            types.Content(
+                                role="user",
+                                parts=parts,
+                            )
+                        ],
+                        config=_make_cfg(include_aspect_ratio=True),
                     ),
-                ),
-            )
+                    self.timeout_sec,
+                )
+            except Exception as e:
+                msg = str(e)
+                if "aspect ratio is not enabled for this model" not in msg.lower():
+                    raise
+                resp = _call_with_timeout(
+                    lambda: self.client.models.generate_content(
+                        model=self.model,
+                        contents=[
+                            types.Content(
+                                role="user",
+                                parts=parts,
+                            )
+                        ],
+                        config=_make_cfg(include_aspect_ratio=False),
+                    ),
+                    self.timeout_sec,
+                )
 
             cands = getattr(resp, "candidates", None) or []
             for c in cands:

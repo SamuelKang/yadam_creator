@@ -1,0 +1,93 @@
+• 이 프로그램을 "사용자 실행 기준"으로 보면 전체는 3단계 wrapper이고, 실제 이미지 파이프라인 내부는 7단계입니다.
+
+  기준 코드는 yadam/cli.py:533, yadam/pipeline/orchestrator.py:947 입니다.
+
+  | 순서 | 기능 | 담당 | Codex skill 대체 가능 여부 |
+  |---|---|---|---|
+  | 0 | 제목 입력 시 storyNN.title 생성 | Python | 부분 가능 |
+  | 1 | 시놉시스 생성 | LLM 호출 + Python 저장 | 부분 가능 |
+  | 2 | 챕터별 스토리 생성 | LLM 호출 + Python 저장 | 부분 가능 |
+  | 3 | 대본 로드, 정규화, 해시 비교, 기존 결과 재사용 판단 | Python | 가능하지만 실익 낮음 |
+  | 4 | 문장 분리, 챕터 부착, scene 분할 | Python | 가능하지만 비권장 |
+  | 5 | 캐릭터/장소 seed 추출 + LLM 구조 추출 + scene tag/clip prompt 병합 | Python + LLM | 부분 가능 |
+       ==> 캐릭터/장소 seed 추출, tag_scene + LLM 구조 추출 
+  | 6 | auto scene rules 생성 + 수동 rules 적용 | Python + LLM | 부분 가능 |
+  | 7 | 캐릭터 레퍼런스 이미지 생성 | Python + 이미지 모델 | 사실상 불가 |
+  | 8 | 장소 레퍼런스 이미지 생성 | Python + 이미지 모델 | 사실상 불가 |
+  | 9 | clip 프롬프트 선택/생성/보정 후 scene 이미지 생성 | Python + LLM + 이미지 모델 | 부분 가능 |
+  | 10 | .vrew export | Python | 가능하지만 비권장 |
+
+  정리해서 설명하면 아래와 같습니다.
+
+  CLI 바깥 wrapper 3단계
+
+  1. 시놉시스 생성
+     코드: yadam/cli.py:643, yadam/cli.py:898
+     --title 또는 --story-id --make_synopsis로 실행되고, 텍스트 LLM이 본문을 만들고 Python이 파일로 저장합니다.
+     Codex skill 대체: 부분 가능. Codex가 직접 .synopsis를 써줄 수는 있지만, 현재 CLI에 "skill을 런타임 엔진으로 꽂는" 구조는
+     아닙니다.
+  2. 스토리 생성
+     코드: yadam/cli.py:684, yadam/cli.py:948
+     챕터별로 텍스트 LLM 호출 후 .txt를 누적 저장합니다.
+     Codex skill 대체: 부분 가능. 사람이 Codex에 맡겨 스토리를 생성할 수는 있지만 자동 파이프라인 대체로는 부적합합니다.
+  3. 이미지 + .vrew 파이프라인 진입
+     코드: yadam/cli.py:838
+     여기서 Orchestrator.run()을 호출합니다.
+
+  Orchestrator 내부 7단계
+
+  1. 대본 읽기/정규화/변경 감지
+     코드: yadam/pipeline/orchestrator.py:947
+     전부 Python입니다.
+     Codex skill 대체: 가능하지만 실익 낮음. 이건 정형 처리라 코드가 맞습니다.
+  2. 구조 추출
+     코드: yadam/pipeline/orchestrator.py:1019
+     extract_characters, extract_places, split_sentences_korean, split_into_scenes, tag_scene는 Python이고,
+     LLMEntityExtractor.extract()는 LLM입니다.
+     Codex skill 대체: 부분 가능. 구조 JSON을 Codex가 수동 생성할 수는 있지만, 현재처럼 반복 재실행/병합/폴백까지 자동화하려
+     면 Python 유지가 낫습니다.
+
+ 3. project merge
+     코드: yadam/pipeline/orchestrator.py:1111, yadam/pipeline/orchestrator.py:1385
+     캐릭터/장소/scene/project.json 병합은 Python입니다.
+     Codex skill 대체: 가능하지만 비권장.
+  4. scene rules 생성/적용
+     코드: yadam/pipeline/orchestrator.py:1393
+     자동 규칙 생성은 LLM, 적용은 Python입니다.
+     Codex skill 대체: 부분 가능. 실제로 이 저장소는 중간에 "Codex에게 규칙 파일 생성 요청" 흐름을 염두에 두고 있습니다:
+     yadam/pipeline/orchestrator.py:1695
+  5. 캐릭터 이미지 생성
+     코드: yadam/pipeline/orchestrator.py:1443
+     프롬프트 조립은 Python, 이미지 생성은 외부 이미지 모델입니다.
+     Codex skill 대체: 사실상 불가. Skill은 에이전트 작업 규칙이지 이미지 생성 API 대체물이 아닙니다.
+  6. 장소 이미지 생성
+     코드: yadam/pipeline/orchestrator.py:1592
+     캐릭터와 동일하게 Python + 이미지 모델입니다.
+     Codex skill 대체: 사실상 불가.
+  7. clip 프롬프트 생성/scene 이미지 생성
+     코드: yadam/pipeline/orchestrator.py:1884, yadam/pipeline/orchestrator.py:2051
+     LLM scene prompt 생성, Python safety 보정, 이미지 모델 호출, 실패 시 LLM prompt rewrite까지 들어갑니다.
+     Codex skill 대체: 부분 가능. 프롬프트 텍스트 자체는 Codex가 만들 수 있지만, 대량 scene 처리와 이미지 재시도까지 skill로
+     대체하는 건 현실적으로 맞지 않습니다.
+  8. .vrew export
+     코드: yadam/pipeline/orchestrator.py:2300, yadam/export/vrew_exporter.py:47
+     전부 Python입니다.
+     Codex skill 대체: 가능하지만 비권장. 정형 JSON/XML 변환이라 코드가 맞습니다.
+
+  핵심 결론
+
+  - Python이 맡아야 하는 것: 파일 I/O, 상태 관리, resume, merge, 규칙 적용, export.
+  - LLM이 맡는 것: synopsis, story, 구조 추출, scene prompt, policy rewrite, auto rules.
+  - 이미지 모델이 맡는 것: 캐릭터/장소/clip 이미지 생성.
+  - Codex skill로 바꾸기 좋은 것: 규칙 파일 작성, 수동 보정 워크플로, 운영 체크리스트, 반자동 구조 검수.
+  - Codex skill로 바꾸기 어려운 것: 런타임 자동 파이프라인 자체.
+
+  한 줄로 말하면, 이 프로그램은 "자동 실행 엔진은 Python", "창의적 생성은 LLM", "이미지 산출은 이미지 모델" 구조이고, Codex
+  skill은 이 셋을 대체하기보다 보조 운영 레이어로 쓰는 게 맞습니다.
+
+  원하면 다음 답변에서
+
+  1. 완전 자동 유지
+  2. Codex 반자동 개입형
+  3. skill 중심 운영형
+     세 가지 운영 구조로 재설계안까지 적어드리겠습니다.

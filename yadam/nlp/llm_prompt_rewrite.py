@@ -8,6 +8,8 @@ from typing import Any, Dict
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from yadam.model_defaults import DEFAULT_TEXT_LLM_MODEL
+from yadam.nlp._llm_timeout import call_with_timeout
 
 
 class PromptRewriteResult(BaseModel):
@@ -16,9 +18,10 @@ class PromptRewriteResult(BaseModel):
 
 @dataclass
 class LLMPromptRewriteConfig:
-    model: str = "gemini-2.5-flash"
+    model: str = DEFAULT_TEXT_LLM_MODEL
     temperature: float = 0.2
     max_prompt_chars: int = 3500
+    timeout_sec: float = 60.0
 
 
 class LLMPromptRewriter:
@@ -58,14 +61,17 @@ class LLMPromptRewriter:
 
         user_text = instruction + "\n[INPUT_JSON]\n" + json.dumps(payload, ensure_ascii=False)
 
-        resp = self.client.models.generate_content(
-            model=self.cfg.model,
-            contents=[user_text],
-            config=types.GenerateContentConfig(
-                temperature=self.cfg.temperature,
-                response_mime_type="application/json",
-                response_schema=PromptRewriteResult,
+        resp = call_with_timeout(
+            lambda: self.client.models.generate_content(
+                model=self.cfg.model,
+                contents=[user_text],
+                config=types.GenerateContentConfig(
+                    temperature=self.cfg.temperature,
+                    response_mime_type="application/json",
+                    response_schema=PromptRewriteResult,
+                ),
             ),
+            self.cfg.timeout_sec,
         )
 
         parsed = getattr(resp, "parsed", None)

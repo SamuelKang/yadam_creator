@@ -109,7 +109,26 @@ def build_character_prompt(
     if wardrobe_anchors is None:
         wardrobe_anchors = []
 
-    anchors = [h.strip() for h in (hints or []) if isinstance(h, str) and h.strip()]
+    def _solo_safe_anchor(text: str) -> bool:
+        t = (text or "").strip()
+        if not t:
+            return False
+        # Character sheet must stay single-subject; drop anchors that imply extra people.
+        blocked = (
+            "업고", "업은", "업힌", "업혀", "등에 업", "안고", "안긴", "안겨", "껴안",
+            "동생", "아이", "남매", "둘이", "셋이", "함께", "포대기",
+            "두 사람", "세 사람", "군중", "무리", "사람들",
+        )
+        return not any(k in t for k in blocked)
+
+    anchors = [
+        h.strip()
+        for h in (hints or [])
+        if isinstance(h, str) and h.strip() and _solo_safe_anchor(h)
+    ]
+    # Keep character prompt concise and stable.
+    if len(anchors) > 10:
+        anchors = anchors[:10]
     anchor_line = ", ".join(anchors) if anchors else ""
 
     # 성장 서사 variant
@@ -223,8 +242,8 @@ def build_character_prompt(
             ]
         elif tier == "T1":
             wardrobe_bits += [
-                "하류 복식: 삼베/거친 무명, 해짐/기움은 과장 없이",
-                "짚신/헝겊 띠 등 실용적 소품",
+                "하류 복식: 검소한 무명 위주의 실용 차림",
+                "짚신/헝겊 띠 등 단순 소품, 과도한 오염/찢김/해짐 강조 금지",
             ]
         else:
             wardrobe_bits += [
@@ -287,10 +306,31 @@ def build_character_prompt(
         f"복식·소품(핵심): {wardrobe_line}",
         f"외형·추가 앵커: {anchor_line}",
         "구도: 세로 3:4 비율, 전신(머리~발) 표현 우선, 중앙 정렬",
+        "인물 수: 반드시 해당 캐릭터 1명만 단독으로 묘사, 다른 사람/아이/실루엣/배경 인물 추가 금지",
+        "행동 제한: 다른 사람을 업거나 안거나 부축하는 포즈 금지(대본 힌트에 있어도 캐릭터 시트에서는 단독 포즈로 변환)",
         "배경: 순백 단색, 배경 소품 없음, 무늬 없음, 그라데이션 없음, 여백에 글자 영역 만들지 않음",
         "조명: 얼굴 윤곽이 자연스럽게 드러나는 부드러운 조명, 과도한 하이라이트/노이즈 없음",
+        "얼굴/인상: 한국인(동아시아) 얼굴 비율과 이목구비, 한국 사극 캐릭터 인상 유지(서양인/혼혈형 과장 금지)",
+        "얼굴 금지: 과한 V라인 턱, 유리피부/도자기피부, 아이돌형 과미화(과도한 미소년/미소녀화), 성형풍 비율",
+        "표현 톤: B군(정돈된 캐릭터 디자인풍)으로 통일하되, 표정은 자연스럽고 과장 없는 감정 묘사",
+        "질감 제한: 때/먼지/상처/찢김/피폐 질감 과장 금지, 깨끗하고 정돈된 캐릭터 마감 유지",
         "요구: 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
     ]
+    if age_stage == "아동":
+        content_lines += [
+            "아동 연출: 밝고 귀여운 인상, 맑은 눈빛, 건강한 혈색, 가벼운 미소 또는 호기심 표정",
+            "아동 금지: 병약/수척/비참/공포 분위기, 창백한 안색, 고통스러운 표정",
+        ]
+    elif age_stage == "청소년":
+        content_lines += [
+            "청소년 연출: 건강하고 또렷한 인상, 단정하고 생기 있는 표정",
+            "청소년 금지: 병색/창백/극심한 피로/비참함 과장",
+        ]
+    elif age_stage == "청년":
+        content_lines += [
+            "청년 연출: 정돈된 인상과 균형 잡힌 얼굴 비례, 자연스러운 자신감",
+            "청년 금지: 누더기/흙먼지/상처 중심의 피폐 묘사 과장",
+        ]
     if species_norm != "인간":
         content_lines += [
             "동물 캐릭터 규칙: 인간형(의복/손/직립/인간 얼굴 비율)으로 의인화하지 않는다.",
@@ -314,12 +354,37 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
     anchors = [h.strip() for h in (hints or []) if isinstance(h, str) and h.strip()]
     anchor_line = ", ".join(anchors) if anchors else "대본 기반 장소, 분위기와 조명 중심, 과장 없는 연출"
 
-    content = "\n".join([
+    lower_corpus = f"{name} " + " ".join(anchors)
+    is_indoor_living = any(k in lower_corpus for k in ["오두막", "방", "실내", "사랑채", "안채", "대청", "온돌", "부엌"])
+    is_market = any(k in lower_corpus for k in ["시장", "장터", "저잣거리", "시장통"])
+    is_mountain_path = any(k in lower_corpus for k in ["산길", "고갯길", "산자락", "산등성이", "산 중턱"])
+
+    lines = [
         f"장소: {name}",
         f"분위기·시간·날씨·구조 앵커: {anchor_line}",
         "구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 문맥에 맞는 생활 요소(지나가는 사람/군중/동물/장터 기척)를 과하지 않게 포함 가능",
         "밝기/색감: 노출을 충분히 올려 디테일이 읽히게, 암부 뭉침 금지, 생기 있는 색 대비와 중고채도 유지",
         "시간대: 대본에 야간 명시가 없으면 기본은 낮",
-        "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
-    ])
+        "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음, 레터박스(상하 검은 여백) 없음",
+    ]
+    if is_indoor_living:
+        lines.extend([
+            "실내 고증: 조선시대 생활방/온돌 구조를 유지한다(종이문, 낮은 목가구, 온돌 마루/방바닥 중심).",
+            "실내 금지: 헛간/창고 같은 노출 서까래 구조, 중앙 모닥불/캠프파이어/장작 직화, 서양식 fireplace.",
+            "조명: 실내는 등잔/촛불/은은한 자연광 중심으로 표현하고, 과도한 화염 연출은 금지한다.",
+        ])
+    if is_market:
+        lines.extend([
+            "시장 연출: 군중은 중간 밀도로 두고, 배경 인물은 단순화된 군중층으로 처리한다. 과밀한 얼굴 디테일과 과도한 사실 묘사는 금지한다.",
+            "화풍 고정: 반실사 질감보다 한국 웹툰풍 선화와 평면적 색면을 우선한다. 복잡한 사진풍 텍스처와 과도한 미세 디테일은 줄인다.",
+            "배경 요소: 장터 좌판, 천막, 항아리, 바구니, 흙바닥 골목 등은 유지하되 주 피사체를 압도할 정도의 과밀 구성은 피한다.",
+        ])
+    if is_mountain_path:
+        lines.extend([
+            "산길 연출: 외딴 산길과 고요한 능선 분위기를 유지한다. 핵심 인물 외의 행인, 구경꾼, 행렬, 군중은 넣지 않는다.",
+            "배경 요소: 바위, 메마른 흙길, 경사진 비탈, 드문 나무, 밤바람, 먼 산 능선 위주로 구성하고 사람 실루엣은 금지한다.",
+            "화풍 고정: 한국 웹툰풍 선화와 명확한 실루엣을 유지하되, 쓸데없는 배경 인물 서사는 만들지 않는다.",
+        ])
+
+    content = "\n".join(lines)
     return PromptParts(era.prefix, content, style.suffix, era.safety).build()

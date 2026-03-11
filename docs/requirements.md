@@ -170,8 +170,10 @@ LLM 호출 진행상황 표시(heartbeat)
 
 8.4 이미지 API 선택
 	•	CLI에서 이미지 생성 백엔드를 선택할 수 있어야 한다.
+	•	CLI에서 텍스트 LLM 모델도 지정할 수 있어야 한다: `--llm-model <model>`
 	•	--image-api vertex_imagen | gemini_flash_image | comfyui
 	•	--image-model 로 모델명을 오버라이드할 수 있어야 한다.
+	•	텍스트 LLM 기본값: `gemini-3-flash-preview`
 	•	기본값:
 	•	vertex_imagen -> imagen-4.0-generate-001
 	•	gemini_flash_image -> gemini-2.5-flash-image
