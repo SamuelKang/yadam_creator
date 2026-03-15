@@ -21,21 +21,44 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
 4. Keep the prompt as a short English visual description.
 5. Preserve Joseon period context and scene continuity.
 6. Ensure the scene has a concrete place tag or at least a strong environment cue before step 9.
+7. Catch likely continuity drift before any image generation:
+   - broad `scene_bindings` that inject the wrong recurring character into a whole run
+   - child lead prompts that stop restating child scale/headwear/costume and start drifting older
+   - recovery or reveal scenes where the wardrobe should already have changed but the prompt still points back to the old look
 
 ## Rewrite Rules
 
 - Prefer action and expression over spoken content.
 - Replace spoken lines with facial expression, posture, hand gesture, gaze, and blocking.
+- Do not assume the image model understands story-specific proper nouns.
+- Replace character names with role + age + costume + physical anchor when useful.
+- Make each prompt standalone:
+  - the prompt should still make sense if the model has never seen the previous scene
+  - avoid `same as before`, `same robe`, `scene 008`, or chapter-title references
+- Review binding-driven cast continuity before generation:
+  - compare the scene text, `scene.characters`, and any story-local `scene_bindings`
+  - if an antagonist, magistrate, shaman, or other recurring lead is present only because a binding is too broad, fix the binding first rather than merely rewriting the prompt
 - Keep shot cues if useful, but avoid bloated prompts.
 - Avoid generic prompts like `Joseon-era dramatic scene` with no space/background detail.
 - Include a concrete environment cue such as room, market, mountain path, hut interior, courtyard, prison cell, or village lane.
+- Prefer drawable acting cues over abstract labels:
+  - better: `the guard leans in and keeps one hand near his sword`
+  - worse: `grim resolve`, `subtle pressure`, `holding tense silence`
+- For recurring guard/bodyguard characters, make them do something visible in the frame instead of leaving them as a stiff bystander.
+- For continuity-heavy runs, restate visual state changes directly:
+  - bandaged arm
+  - soot or burn marks
+  - disguise on/off
+  - noblewoman outfit after recovery
+  - veil/staff removed after identity reveal
+- When the user reports a repeated defect pattern, treat it as a prompt-stage blocker for all neighboring scenes with the same setup.
 - Do not add modern objects, neon signage, printed lettering, or UI-like overlays.
 - If the existing prompt is already clean and concise, leave it unchanged.
 
 ## Good Direction
 
-- `medium shot, Yuni grips the brass bowl with trembling hands in a dim Joseon room, oil-lamp glow, anxious resolve, Korean manhwa style`
-- `wide shot, two children stand on a windy mountain path at dusk, worn Joseon clothes, distant village lights, loneliness and tension, Korean webtoon style`
+- `medium shot, a hungry girl grips the brass bowl with trembling hands in a dim Joseon room, oil-lamp glow, anxious eyes, Korean manhwa style`
+- `wide shot, a twelve-year-old boy in a beige scholar robe walks a windy mountain path while his middle-aged guard scans the brush with one hand near his sword, Korean webtoon style`
 
 ## Bad Direction
 
@@ -44,3 +67,5 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
 - prompts asking for visible signs or written text
 - prompts with no place tag and no environment cue
 - generic standing-character prompts that can collapse into a white background
+- prompts that depend on names alone, such as `Iseol confronts Bak Seobang`
+- prompts that use abstract emotion labels without visible acting or blocking

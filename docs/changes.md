@@ -32,6 +32,72 @@
 
 변경 이력
 
+[2026-03-15] make_vrew clip prompt 규칙에 standalone 이미지 프롬프트와 guard 연기 지침 추가
+
+- 목적
+	- 다른 story에서도 clip prompt가 고유명사나 이전 장면 문맥에 기대어 drift되거나, 경호 인물이 정면 정자세로 굳는 문제를 줄이기 위함.
+- 변경
+	- `skills/make_vrew/SKILL.md`의 step-9 prompt review 기준에 다음을 명시:
+	- 고유명사/scene-number reference에 기대지 않는 standalone prompt 작성
+	- 역할/나이/복장/시각 앵커 중심의 인물 서술
+	- `grim resolve` 같은 추상 감정어 대신 drawable acting cue 사용
+	- guard/bodyguard 캐릭터에 scan, shield, lean, crouch, half-draw 같은 구체 동작 부여
+	- `skills/make_vrew/references/clip_prompt_review.md`, `skills/make_vrew/references/clip_prompt_repair.md`에 같은 기준과 예시를 추가.
+- 영향
+	- 이후 `make_vrew` 기반 story의 clip prompt 수리/재생성 세션 전반.
+
+[2026-03-13] through-tag-scene/재개 경로에서 기존 synopsis/story 우선 재사용
+
+- 목적
+	- `story-id` 기반 재개 작업에서 `stories/<story-id>.synopsis`, `stories/<story-id>.txt`가 이미 있어도 hidden hash 부재 때문에 synopsis/story 재생성이 다시 걸리는 문제를 막기 위함.
+- 변경
+	- `yadam/cli.py`에서 `--through-tag-scene`, `--through-place-refs`, `--through-clips` 경로일 때는 기존 synopsis/story 파일이 있으면 hidden hash 파일이 없어도 우선 재사용하도록 조정.
+	- 재사용 시 missing hash 파일은 현재 입력 기준으로 보강 저장.
+- 영향
+	- `make_vrew` 같은 재개/부분 실행 워크플로우에서 불필요한 LLM 호출 감소.
+
+[2026-03-13] scene prompt 연속 반복 억제와 story26 continuity 규칙 보강
+
+- 목적
+	- 인접 장면이 같은 배경·같은 포즈로 반복되거나, 인질 표정/가마/낫 같은 조선 고증과 행동 상태가 자주 흔들리는 문제를 줄이기 위함.
+- 변경
+	- `yadam/nlp/llm_scene_prompt.py`에 인접 scene shot 변주, 동일 장소 배경 앵커 유지, 인질 표정 제한, 한국형 낫, 무륜 조선 가마 규칙을 조건부로 추가.
+	- `stories/story26_scene_bindings.yaml`, `stories/story26_variant_overrides.yaml`에 `story26` 전용 continuity 잠금 규칙을 추가.
+- 영향
+	- `story26` 재생성 구간과 이후 유사한 조선 산길/움막/인질/가마 장면의 clip prompt 안정성 개선.
+
+[2026-03-13] clip 육안 검수 노하우와 중복 인물/실루엣 자객/가마 오판 방지 규칙 보강
+
+- 목적
+	- 자동 검사만으로는 놓치는 반복 포즈, 그림자형 적, 동일 인물 복제, 아동 연령/복장 드리프트, 가마 탑승자-운반자 혼선 문제를 줄이기 위함.
+- 변경
+	- `yadam/nlp/llm_scene_prompt.py`에 centered standing 반복 억제, 무표정 고정 방지, duplicate figure 금지, 팔/손 좌우 융합 방지, silhouette-only 자객 금지, 가마 승객/운반자 분리, 16:9 비율 왜곡 방지 규칙을 추가.
+	- `skills/make_vrew/SKILL.md`, `skills/make_vrew/references/clip_image_review.md`, `skills/make_vrew/references/clip_prompt_repair.md`에 contact sheet 기반 육안 검수와 위 실패 유형별 수리 지침을 추가.
+- 영향
+	- `make_vrew` 운영 세션에서 사용자 피드백 기반 clip 재수리 속도와 재발 방지 정확도가 개선.
+
+[2026-03-13] 조선 생활 소도구 고증에 한국형 ㄱ자 낫 예시 추가
+
+- 목적
+	- 약초꾼/농기구 캐릭터 reference에서 서양식 scythe형 낫이 섞이는 문제를 줄이기 위함.
+- 변경
+	- `skills/make_vrew/references/character_ref_review.md`에 조선 생활 소도구 실루엣 검수 항목 추가.
+	- `docs/requirements.md`, `AGENTS.md`에 한국형 `ㄱ`자 낫을 조선 고증 예시로 명시.
+- 영향
+	- 이후 character reference review와 조선 고증 판단에서 낫 형태도 하드 체크 항목으로 취급.
+
+[2026-03-13] .vrew 자막 2줄 우선 분할 및 export 후 caption 검수 추가
+
+- 목적
+	- `.vrew` 결과에서 한 caption이 3줄 이상으로 자주 보이는 문제를 줄이고, 화면 가독성과 TTS 호흡 단위를 함께 맞추기 위함.
+- 변경
+	- `yadam/export/vrew_exporter.py`에서 caption을 기본 2줄 이하로 맞추는 방향으로 chunk 재분할과 줄바꿈 휴리스틱을 강화.
+	- 문장 길이가 길어 2줄을 넘기기 쉬운 경우, export 단계에서 의미 단위 기준으로 clip을 추가 분할하도록 보강.
+	- `skills/make_vrew/scripts/check_vrew_captions.py` 추가.
+	- `skills/make_vrew/SKILL.md`에 export 후 caption line-count 검수 절차 추가.
+- 사용
+	- `python skills/make_vrew/scripts/check_vrew_captions.py --story-id story14`
+
 [2026-03-11] continuity 검수용 contact sheet 추가
 
 - 목적
@@ -1095,3 +1161,18 @@
 		- 같은 인물과 같은 variant가 인접 장면에서 반복되면 같은 변장/복색/머리 계열을 유지하고 scene마다 새 의상으로 재해석하지 말라는 규칙 추가.
 - 이유
 	- story25의 scene `040~042`처럼 같은 `숯칠한 얼굴과 남루한 거지 변복` variant인데도 clip별로 옷/모자/색이 크게 바뀌는 drift가 확인되었기 때문.
+[2026-03-15] make_vrew skill에 clip 생성 전 continuity gate 강화
+
+- 목적
+	- 다른 story에서도 이미지 생성 전에 drift 원인을 prompt/binding 단계에서 먼저 차단하도록 하기 위함.
+- 변경
+	- `skills/make_vrew/SKILL.md`
+		- step 9 직전 점검 항목에 `scene_bindings` 과잠금, 아동 주인공 앵커 누락, 회복/복식 전환 상태 누락을 prompt-stage blocker로 추가.
+	- `skills/make_vrew/references/clip_prompt_review.md`
+		- broad binding으로 잘못된 인물이 연속 scene에 주입되는 경우를 생성 전 review priority로 추가.
+		- 아동 체구/모자/복식 drift, 정체 공개 후 복식 전환 누락을 prompt review 단계에서 잡도록 보강.
+	- `skills/make_vrew/references/clip_prompt_repair.md`
+		- prompt만 늘리지 말고 `scene_bindings`/`scene.characters` 자체를 먼저 고치라는 repair 규칙 추가.
+		- 소품 위 자연스러운 책/장부 글씨는 허용하되, 말풍선/효과음/캡션형 텍스트는 계속 금지하도록 기준을 명확화.
+- 이유
+	- `story27`에서 조익현이 broad binding 때문에 불필요한 연속 scene에 끼어들고, 이설/월화의 복식 상태가 후반부에서 되돌아가는 문제가 이미지 생성 전 prompt-stage에서 이미 보였기 때문.

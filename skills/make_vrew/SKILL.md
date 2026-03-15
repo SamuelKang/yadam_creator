@@ -46,6 +46,31 @@ Example:
 skills/make_vrew/scripts/run_through_tag_scene.sh story14
 ```
 
+## Story Preflight Review
+
+Before any structure merge or image work, run:
+
+```bash
+python skills/make_vrew/scripts/check_story_preflight.py --story-id <story-id>
+```
+
+This review is meant to catch script-side issues before image generation, for example:
+
+- Joseon-era wording/anachronism problems such as `잉크`
+- stray markup artifacts inside scene text
+- adjacent-scene continuity hotspots that look suspicious enough for human review
+
+If this review reports any issue:
+
+- do not continue directly to structure/image generation
+- report the findings to the user first
+- let the user decide whether to:
+  - proceed as-is
+  - edit the script and restart from `tag_scene`
+  - ask Codex to patch non-authorial/runtime structure only
+
+Treat this as a user decision gate, not as an automatic rewrite step.
+
 ## Codex LLM Stage
 
 After the Python stage completes, Codex must perform the role that `LLMEntityExtractor.extract(...)` normally performs.
@@ -169,8 +194,28 @@ Minimum review requirements:
 - remove quoted dialogue
 - remove `Name: ...` dialogue fragments
 - remove any speech bubble, caption, subtitle, narration-box, or visible-text wording
+- do not rely on proper nouns such as character names, chapter names, or scene-number references for image understanding
+- make each prompt standalone so an image model can understand the cast, place, costume, and action without prior scene context
 - reject generic prompts that do not ground the scene in a concrete environment
 - reject scenes that still have no usable place tag or environment cue
+- review `scene_bindings` and `scene.characters` before clip generation when a whole neighboring run could drift together:
+  - if one extra lead keeps appearing in scenes where the script does not show them, split or narrow the binding range before running step 9
+  - do not leave broad chapter-wide bindings in place when only the opening or closing scene needs that extra character
+- when adjacent scenes are one continuous beat, preserve the same room/background unless the script explicitly changes place
+- explicitly encode critical continuity state when the script depends on it:
+  - exact required cast and excluded extra people
+  - whether a character is lying, collapsed, unconscious, injured, kneeling, standing, or already recovered
+  - whether the moment is before treatment, during treatment, or after relief
+  - whether a disguise, bandage, soot mark, noblewoman outfit, veil removal, or other visual status change has already happened
+- prefer role/appearance descriptors over names:
+  - example: `the Joseon king in a navy royal robe`
+  - example: `a rugged middle-aged guard in a pale robe with one hand near his sword`
+- prefer drawable acting cues over abstract mood labels:
+  - replace `grim resolve` with visible body language such as clenched jaw, protective stance, crouching inspection, reaching for a sword, leaning close to warn, or scanning the road
+- when a bodyguard/escort character appears repeatedly, avoid defaulting to stiff front-facing standing poses; give that character a concrete job in the frame such as shielding, scanning, restraining, crouching, pointing, or stepping in
+- when a child lead drifts older or swaps costume in nearby scenes, restate child-sized body, headwear, robe family, and fresh injury/disguise anchors directly in the prompt
+- treat this prompt-stage review as the first continuity gate:
+  - if the likely failure mode is already visible in prompt/binding form, repair it before generating any clip instead of waiting for image review to catch it later
 - keep prompts short English scene descriptions
 - preserve Joseon setting and current scene continuity
 
@@ -212,12 +257,27 @@ python skills/make_vrew/scripts/check_clip_images.py --story-id <story-id>
 
 Then review suspicious clips using `references/clip_image_review.md`.
 
+When reviewing many neighboring clips, prefer a contact sheet first to reduce payload size and catch continuity drift quickly:
+
+```bash
+python3 scripts/make_contact_sheet.py --story-id <story-id> --scenes 24-35
+```
+
+Use this especially for:
+
+- repeated early-hook shots with the same pose/expression/background
+- neighboring scenes that may have duplicate lead figures in one frame
+- age/costume drift across a short continuous beat
+- palanquin/procession/carrier scenes where rider vs bearer roles can flip
+- aspect-ratio distortion or stretched frames that automatic checks miss
+
 If any suspicious clip issues are found:
 
 - do not continue to export
 - report the exact scene ids
 - treat them as clip regeneration targets
 - rerun clip review after regeneration
+- treat neighboring-scene continuity breaks as blockers even if `check_clip_images.py` passes
 
 ## Export Stage
 
@@ -230,6 +290,20 @@ skills/make_vrew/scripts/run_export_after_clips.sh <story-id>
 This should reuse existing story/structure/reference/clip artifacts and let Python perform the normal export stage.
 
 If any clip errors or suspicious clip review findings remain, do not run export.
+
+After export, always run:
+
+```bash
+python skills/make_vrew/scripts/check_vrew_captions.py --story-id <story-id>
+```
+
+If this review reports many 3-line captions or overlong caption lines:
+
+- do not mark the `.vrew` output as final
+- report the exact scene/chunk ids
+- prefer repairing Python export chunking/line-break heuristics first
+- if the problem is scene-text specific, allow scene-local text/chunk adjustments that preserve natural TTS phrasing
+- rerun export and caption review until the output is mostly 2 lines or fewer per caption
 
 ## Inputs
 
@@ -264,7 +338,9 @@ After running:
 14. Run `check_clip_images.py` and review suspicious clips before export.
 15. If clip image review finds issues, stop and report clip regeneration targets.
 16. If there are no clip errors and no suspicious clip review findings, run export through `run_export_after_clips.sh`.
-17. If any clip errors remain, stop before export and report the errors.
+17. After export, run `check_vrew_captions.py` and report whether caption line count is acceptable.
+18. If caption review finds many 3-line captions or overlong lines, treat the `.vrew` as needing repair rather than final output.
+19. If any clip errors remain, stop before export and report the errors.
 
 ## Output Rules
 
