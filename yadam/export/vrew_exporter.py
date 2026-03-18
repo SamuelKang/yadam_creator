@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from uuid import uuid4
 import re
 import zipfile
@@ -133,6 +133,13 @@ class VrewFileExporter(VrewExporter):
                 },
             }
 
+            last_clip_idx: Optional[int] = None
+            last_file_idx: Optional[int] = None
+            last_audio_media_id: Optional[str] = None
+            last_caption_text: Optional[str] = None
+            last_tts_text: Optional[str] = None
+            last_raw_text: Optional[str] = None
+
             for chunk_idx, chunk_text in enumerate(text_chunks, start=1):
                 audio_media_id = str(uuid4())
                 audio_name = self._audio_name_from_text(chunk_text, sid, chunk_idx)
@@ -143,6 +150,31 @@ class VrewFileExporter(VrewExporter):
                     max_lines=caption_max_lines,
                 )
                 if not self._should_export_tts_chunk(chunk_text, tts_text):
+                    # Merge caption-only or non-TTS-safe chunks into the previous clip.
+                    if last_clip_idx is not None and last_audio_media_id is not None:
+                        merged_raw = f\"{(last_raw_text or '').strip()} {chunk_text.strip()}\".strip()
+                        merged_tts = self._normalize_tts_text(merged_raw)
+                        merged_caption = (last_caption_text or \"\").strip()
+                        if caption_text:
+                            merged_caption = f\"{merged_caption}\\n{caption_text}\".strip() if merged_caption else caption_text
+
+                        if merged_caption:
+                            clips[last_clip_idx][\"captions\"][0][\"text\"][0][\"insert\"] = merged_caption + \"\\n\"
+                            last_caption_text = merged_caption
+
+                        if merged_tts and merged_tts != last_tts_text and last_file_idx is not None:
+                            words, duration = self._build_words(merged_tts, last_audio_media_id)
+                            clips[last_clip_idx][\"words\"] = words
+                            files[last_file_idx][\"videoAudioMetaInfo\"][\"duration\"] = duration
+                            files[last_file_idx][\"fileSize\"] = max(1, int(duration * 16000))
+                            tts_info = tts_clip_infos.get(last_audio_media_id, {})
+                            if \"text\" in tts_info:
+                                tts_info[\"text\"][\"raw\"] = merged_tts
+                                tts_info[\"text\"][\"processed\"] = merged_tts
+                            tts_info[\"duration\"] = duration
+                            tts_clip_infos[last_audio_media_id] = tts_info
+                            last_tts_text = merged_tts
+                            last_raw_text = merged_raw
                     continue
                 words, duration = self._build_words(tts_text, audio_media_id)
                 files.append({
@@ -189,6 +221,12 @@ class VrewFileExporter(VrewExporter):
                     "id": str(uuid4()),
                     "audioIds": [],
                 })
+                last_clip_idx = len(clips) - 1
+                last_file_idx = len(files) - 1
+                last_audio_media_id = audio_media_id
+                last_caption_text = caption_text
+                last_tts_text = tts_text
+                last_raw_text = chunk_text
 
         project_obj = {
             "version": int(preset.get("project_version", 15)),
@@ -1028,8 +1066,7 @@ class VrewFileExporter(VrewExporter):
         fallback = self._strip_tts_unsafe_chars(fallback)
         if self._has_tts_payload(fallback):
             return fallback
-        # Last-resort: ensure TTS has a safe, speakable token to avoid export errors.
-        return "잠시"
+        return ""
 
     def _strip_tts_unsafe_chars(self, text: str) -> str:
         s = str(text or "")
