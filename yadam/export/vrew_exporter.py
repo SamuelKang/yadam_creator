@@ -55,6 +55,7 @@ class VrewFileExporter(VrewExporter):
         input_script = str(req.project.get("project", {}).get("input_script_path") or "").strip()
         story_name = Path(input_script).stem if input_script else "story"
         preset = self._resolve_export_preset(Path(req.out_dir), story_name)
+        kenburns_info = self._resolve_kenburns_info()
 
         now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
         project_id = str(uuid4())
@@ -83,6 +84,39 @@ class VrewFileExporter(VrewExporter):
         tts_clip_infos: Dict[str, Any] = {}
         clips: List[Dict[str, Any]] = []
         zip_media: List[Tuple[str, bytes]] = []
+
+        if kenburns_info is not None:
+            project_obj = self._build_v16_project(
+                scenes=scenes,
+                clip_text_max_chars=clip_text_max_chars,
+                clip_text_soft_max_chars=clip_text_soft_max_chars,
+                caption_line_max_chars=caption_line_max_chars,
+                caption_max_lines=caption_max_lines,
+                speaker=speaker,
+                voice_volume=voice_volume,
+                voice_speed=voice_speed,
+                voice_pitch=voice_pitch,
+                voice_emotion=voice_emotion,
+                project_id=project_id,
+                now_iso=now_iso,
+                preset=preset,
+                kenburns_info=kenburns_info,
+                files=files,
+                assets=assets,
+                tts_clip_infos=tts_clip_infos,
+                clips=clips,
+                zip_media=zip_media,
+            )
+            out_path = Path(req.out_dir) / f"{story_name}.vrew"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_STORED) as zf:
+                zf.writestr("media/", b"")
+                for arcname, b in zip_media:
+                    zf.writestr(arcname, b)
+                zf.writestr("project.json", json.dumps(project_obj, ensure_ascii=False, indent=2).encode("utf-8"))
+            payload_out = Path(req.out_dir) / "vrew_payload.json"
+            payload_out.write_text(json.dumps(req.project, ensure_ascii=False, indent=2), encoding="utf-8")
+            return
 
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
@@ -152,26 +186,26 @@ class VrewFileExporter(VrewExporter):
                 if not self._should_export_tts_chunk(chunk_text, tts_text):
                     # Merge caption-only or non-TTS-safe chunks into the previous clip.
                     if last_clip_idx is not None and last_audio_media_id is not None:
-                        merged_raw = f\"{(last_raw_text or '').strip()} {chunk_text.strip()}\".strip()
+                        merged_raw = f"{(last_raw_text or '').strip()} {chunk_text.strip()}".strip()
                         merged_tts = self._normalize_tts_text(merged_raw)
-                        merged_caption = (last_caption_text or \"\").strip()
+                        merged_caption = (last_caption_text or "").strip()
                         if caption_text:
-                            merged_caption = f\"{merged_caption}\\n{caption_text}\".strip() if merged_caption else caption_text
+                            merged_caption = f"{merged_caption}\n{caption_text}".strip() if merged_caption else caption_text
 
                         if merged_caption:
-                            clips[last_clip_idx][\"captions\"][0][\"text\"][0][\"insert\"] = merged_caption + \"\\n\"
+                            clips[last_clip_idx]["captions"][0]["text"][0]["insert"] = merged_caption + "\n"
                             last_caption_text = merged_caption
 
                         if merged_tts and merged_tts != last_tts_text and last_file_idx is not None:
                             words, duration = self._build_words(merged_tts, last_audio_media_id)
-                            clips[last_clip_idx][\"words\"] = words
-                            files[last_file_idx][\"videoAudioMetaInfo\"][\"duration\"] = duration
-                            files[last_file_idx][\"fileSize\"] = max(1, int(duration * 16000))
+                            clips[last_clip_idx]["words"] = words
+                            files[last_file_idx]["videoAudioMetaInfo"]["duration"] = duration
+                            files[last_file_idx]["fileSize"] = max(1, int(duration * 16000))
                             tts_info = tts_clip_infos.get(last_audio_media_id, {})
-                            if \"text\" in tts_info:
-                                tts_info[\"text\"][\"raw\"] = merged_tts
-                                tts_info[\"text\"][\"processed\"] = merged_tts
-                            tts_info[\"duration\"] = duration
+                            if "text" in tts_info:
+                                tts_info["text"]["raw"] = merged_tts
+                                tts_info["text"]["processed"] = merged_tts
+                            tts_info["duration"] = duration
                             tts_clip_infos[last_audio_media_id] = tts_info
                             last_tts_text = merged_tts
                             last_raw_text = merged_raw
@@ -307,6 +341,275 @@ class VrewFileExporter(VrewExporter):
                 base.update({k: v for k, v in template.items() if v is not None})
                 break
         return base
+
+    def _resolve_kenburns_info(self) -> Optional[Dict[str, Any]]:
+        enable = str(os.getenv("VREW_ENABLE_KENBURNS", "")).strip()
+        tmpl = str(os.getenv("VREW_KENBURNS_TEMPLATE_PATH", "")).strip()
+        if enable not in ("1", "true", "True") and not tmpl:
+            return None
+        if not tmpl:
+            return None
+        p = Path(tmpl).expanduser()
+        if not p.exists():
+            return None
+        try:
+            with zipfile.ZipFile(p, "r") as zf:
+                raw = zf.read("project.json")
+            obj = json.loads(raw)
+        except Exception:
+            return None
+        tracks = obj.get("props", {}).get("tracks", {})
+        if isinstance(tracks, dict):
+            for t in tracks.values():
+                if not isinstance(t, dict):
+                    continue
+                if t.get("type") != "image":
+                    continue
+                kb = t.get("kenburnsAnimationInfo")
+                if kb:
+                    return kb
+        return None
+
+    def _build_v16_project(
+        self,
+        *,
+        scenes: List[Dict[str, Any]],
+        clip_text_max_chars: int,
+        clip_text_soft_max_chars: int,
+        caption_line_max_chars: int,
+        caption_max_lines: int,
+        speaker: Dict[str, Any],
+        voice_volume: float,
+        voice_speed: float,
+        voice_pitch: float,
+        voice_emotion: str,
+        project_id: str,
+        now_iso: str,
+        preset: Dict[str, Any],
+        kenburns_info: Dict[str, Any],
+        files: List[Dict[str, Any]],
+        assets: Dict[str, Any],
+        tts_clip_infos: Dict[str, Any],
+        clips: List[Dict[str, Any]],
+        zip_media: List[Tuple[str, bytes]],
+    ) -> Dict[str, Any]:
+        tracks: Dict[str, Any] = {}
+        scene_names: Dict[str, str] = {}
+
+        for zindex, scene in enumerate(scenes):
+            sid = int(scene.get("id", 0))
+            scene_id = str(uuid4())
+            scene_names[scene_id] = f"scene_{sid:03d}"
+            text = str(scene.get("text") or "").strip()
+            text_chunks = self._split_for_clips(
+                text,
+                clip_text_max_chars,
+                clip_text_soft_max_chars,
+                caption_line_max_chars,
+                caption_max_lines,
+            )
+            image_path = Path(str((scene.get("image") or {}).get("path") or "")).resolve()
+
+            image_media_id = str(uuid4())
+            image_arcname = f"media/{image_media_id}.jpeg"
+            image_bytes = image_path.read_bytes()
+            zip_media.append((image_arcname, image_bytes))
+            files.append({
+                "version": 1,
+                "mediaId": image_media_id,
+                "sourceOrigin": "USER",
+                "fileSize": len(image_bytes),
+                "name": image_arcname,
+                "type": "Image",
+                "isTransparent": False,
+                "fileLocation": "IN_MEMORY",
+            })
+
+            image_track_id = str(uuid4())
+            tracks[image_track_id] = {
+                "trackId": image_track_id,
+                "mediaId": image_media_id,
+                "xPos": 0,
+                "yPos": -0.007936507936507908,
+                "height": 1.0158730158730158,
+                "width": 1,
+                "rotation": 0,
+                "zIndex": zindex,
+                "type": "image",
+                "originalWidthHeightRatio": 16.0 / 9.0,
+                "importType": "image",
+                "kenburnsAnimationInfo": deepcopy(kenburns_info),
+                "stats": {"fillType": "cut", "fillMenu": "floating", "rearrangeCount": 0},
+            }
+            image_asset_id = str(uuid4())
+            assets[image_asset_id] = {"trackIds": [image_track_id], "role": "sub"}
+
+            for chunk_idx, chunk_text in enumerate(text_chunks, start=1):
+                audio_media_id = str(uuid4())
+                audio_name = self._audio_name_from_text(chunk_text, sid, chunk_idx)
+                tts_text = self._normalize_tts_text(chunk_text)
+                caption_text = self._balance_caption_lines(
+                    chunk_text,
+                    line_max_chars=caption_line_max_chars,
+                    max_lines=caption_max_lines,
+                )
+                if not self._should_export_tts_chunk(chunk_text, tts_text):
+                    continue
+
+                words, duration = self._build_words_v16(tts_text)
+                files.append({
+                    "version": 1,
+                    "mediaId": audio_media_id,
+                    "sourceOrigin": "VREW_RESOURCE",
+                    "fileSize": max(1, int(duration * 16000)),
+                    "name": f"media/{audio_name}.mp3",
+                    "type": "AVMedia",
+                    "videoAudioMetaInfo": {
+                        "duration": duration,
+                        "audioInfo": {"sampleRate": 24000, "codec": "mp3"},
+                    },
+                    "sourceFileType": "TTS",
+                    "fileLocation": "IN_MEMORY",
+                })
+                tts_info = {
+                    "text": {"raw": tts_text, "processed": tts_text, "textAspectLang": speaker["lang"]},
+                    "speaker": dict(speaker),
+                    "duration": duration,
+                    "volume": voice_volume,
+                    "speed": voice_speed,
+                    "pitch": voice_pitch,
+                    "version": "v1",
+                }
+                if voice_emotion:
+                    tts_info["emotion"] = voice_emotion
+                tts_clip_infos[audio_media_id] = tts_info
+
+                t = 0.0
+                for w in words:
+                    w_dur = float(w.get("duration") or 0)
+                    tts_track_id = str(uuid4())
+                    tracks[tts_track_id] = {
+                        "trackId": tts_track_id,
+                        "mediaId": audio_media_id,
+                        "volume": 1,
+                        "sourceIn": round(t, 3),
+                        "sourceOut": round(t + w_dur, 3),
+                        "loop": False,
+                        "playbackRate": 1,
+                        "type": "ttsClip",
+                    }
+                    asset_id = str(uuid4())
+                    assets[asset_id] = {"trackIds": [tts_track_id], "role": "main"}
+                    w["assetIds"] = [asset_id] if w.get("type") != 2 else []
+                    t += w_dur
+
+                clips.append({
+                    "sceneId": scene_id,
+                    "words": words,
+                    "captionMode": "MANUAL",
+                    "captions": [
+                        {"text": [{"insert": caption_text + "\n"}]},
+                        {"text": [{"insert": "\n"}]},
+                    ],
+                    "assetIds": [image_asset_id],
+                    "dirty": {"blankDeleted": False, "caption": False, "video": False},
+                    "translationModified": {"result": False, "source": False},
+                    "id": str(uuid4()),
+                })
+
+        return {
+            "version": 16,
+            "projectId": project_id,
+            "files": files,
+            "transcript": {"clips": clips, "sceneNames": scene_names, "translateInfo": None},
+            "props": {
+                "tracks": tracks,
+                "assets": assets,
+                "overdubInfos": [],
+                "analyzeDate": now_iso,
+                "captionDisplayMode": {"0": True, "1": False},
+                "mediaEffectMap": {},
+                "markerNames": {},
+                "flipSetting": {},
+                "videoRatio": 1.7777777777777777,
+                "globalVideoTransform": {"x": 0, "y": 0, "scale": 1, "rotation": 0},
+                "videoSize": {"width": 1920, "height": 1080},
+                "backgroundMap": {},
+                "globalCaptionStyle": deepcopy(preset["global_caption_style"]),
+                "lastTTSSettings": {
+                    "pitch": voice_pitch,
+                    "speed": voice_speed,
+                    "volume": voice_volume,
+                    "speaker": dict(speaker),
+                    "emotion": voice_emotion,
+                    "version": "v1",
+                },
+                "initProjectVideoSize": {"width": 1920, "height": 1080},
+                "pronunciationDisplay": False,
+                "projectAudioLanguage": "ko",
+                "audioLanguagesMap": {},
+                "originalClips": [],
+                "ttsClipInfosMap": tts_clip_infos,
+            },
+            "comment": {},
+            "statistics": {
+                "projectStartMode": "images_to_video",
+                "saveInfo": {
+                    "created": {"version": "3.6.2", "date": now_iso, "stage": "release"},
+                    "updated": {"version": "3.6.2", "date": now_iso, "stage": "release"},
+                    "loadCount": 1,
+                    "saveCount": 1,
+                },
+            },
+        }
+
+    def _build_words_v16(self, text: str) -> Tuple[List[Dict[str, Any]], float]:
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        tokens = re.findall(r"\S+|\s+", normalized)
+        words: List[Dict[str, Any]] = []
+        t = 0.0
+        per_tok = 0.24
+        for tok in tokens:
+            d = per_tok
+            words.append({
+                "id": str(uuid4()),
+                "text": tok,
+                "playbackRate": 1,
+                "duration": round(d, 3),
+                "aligned": True,
+                "type": 0,
+                "originalDuration": round(d, 3),
+                "originalStartTime": round(t, 3),
+                "truncatedWords": [],
+                "assetIds": [],
+            })
+            t += d
+        words.append({
+            "id": str(uuid4()),
+            "text": "",
+            "playbackRate": 1,
+            "duration": 0.7,
+            "aligned": True,
+            "type": 1,
+            "originalDuration": 0.7,
+            "originalStartTime": round(t, 3),
+            "truncatedWords": [],
+            "assetIds": [],
+        })
+        t += 0.7
+        words.append({
+            "id": str(uuid4()),
+            "text": "",
+            "playbackRate": 1,
+            "duration": 0.0,
+            "aligned": True,
+            "type": 2,
+            "originalDuration": 0.0,
+            "originalStartTime": round(t, 3),
+            "truncatedWords": [],
+            "assetIds": [],
+        })
+        return words, round(t, 3)
 
     def _load_preset_from_vrew(self, vrew_path: Path) -> Dict[str, Any] | None:
         try:
