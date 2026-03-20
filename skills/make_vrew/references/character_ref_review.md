@@ -36,6 +36,8 @@ Priority checks:
 - a likely human protagonist has not been misclassified as an animal species
 - canonical name matches the correct image file/path
 - face, hair, and outfit anchors are stable enough for clip reference use
+- Joseon-era tools and props match Korean historical silhouettes when they are continuity-critical
+  - example: `약초꾼/농기구 낫` should default to a Korean `ㄱ`-shaped sickle, not a Western scythe-like curve
 - no visible text, subtitles, captions, or speech bubbles
 - no major anatomy breakage
 

@@ -18,6 +18,14 @@ def _classify_genai_error(msg: str) -> ErrorKind:
     s = (msg or "").lower()
     if any(x in s for x in ["429", "503", "deadline", "timeout", "temporar", "unavailable", "rate limit"]):
         return ErrorKind.TRANSIENT
+    if any(x in s for x in [
+        "nodename nor servname provided",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "getaddrinfo failed",
+        "dns",
+    ]):
+        return ErrorKind.TRANSIENT
     if any(x in s for x in ["policy", "safety", "blocked", "rai", "prohibited"]):
         return ErrorKind.POLICY
     if any(x in s for x in ["permission", "unauthorized", "forbidden", "auth"]):

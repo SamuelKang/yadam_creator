@@ -22,20 +22,29 @@
   - 코드/프롬프트 변경만 커밋 대상으로 본다(사용자 요청 시 예외)
 - 사용자가 명시하지 않은 파괴적 명령(`reset --hard` 등)은 금지.
 - 새 규칙을 넣을 때는 가능하면 **조건부 규칙**으로 넣어 토큰/부작용을 줄인다.
+- 새 세션 시작 시, 전역 스킬 목록만 믿지 말고 이 저장소의 로컬 스킬 존재를 직접 확인한다.
+  - 우선 확인 대상: `skills/make_vrew/SKILL.md`
+  - 구조/룰만 다루는 작업이면 `skills/yadam-structure-rules/SKILL.md`도 함께 확인한다.
+  - 사용자가 `story-id` 기반 이미지/clip/`.vrew` 작업을 요청하면, 가능하면 먼저 `make_vrew` 로컬 스킬 기준으로 진행한다.
 
 ## 4) 이 프로젝트에서 특히 지킬 사항
 - `llm_scene_prompt.py`:
   - shot-first, 짧은 영어 scene prompt 지향
   - 직접 대사/인용부호 금지(행동 묘사로 대체)
-  - 조선 고증 규칙 유지(실내 서양식 fireplace 금지 등)
+  - 조선 고증 규칙 유지(실내 서양식 fireplace 금지, 한국형 `ㄱ`자 낫 같은 생활 소도구 실루엣 유지 등)
 - 인물 일관성:
   - 실명 canonical + 역할명 alias
   - 성장 서사는 분리 캐릭터 대신 variants 우선
   - scene `characters/character_instances` 누락 최소화
+  - 아동 주인공 drift가 보이면 prompt에 체형/연령/머리장식/도포 색을 다시 명시한다.
+  - 같은 장면에 주인공 중복 생성이 나왔으면 `exactly one boy/one guard/...`처럼 인원 수를 직접 잠근다.
+  - 후반부 화상, 관복, 규수 복장처럼 상태 전환이 끝난 구간은 `stories/<story-id>_variant_overrides.yaml`와 `stories/<story-id>_scene_bindings.yaml`에도 같이 남긴다.
 - Gemini 이미지:
   - `image_config.aspect_ratio` 명시
   - `reference_image_paths`(핵심 1~2명) 활용
   - `EMPTY_IMAGE_BYTES`는 프롬프트 민감도 완화 후 scene 단위 재시도
+  - `EMPTY_IMAGE_BYTES`가 특정 scene에서 반복되면 인물 수/행동/배경을 줄인 짧은 prompt로 바꾸고 해당 scene만 `pending` 재생성한다.
+  - 액션 의미가 중요한 장면은 “무릎 꿇음” 같은 표면 포즈보다 대본의 실제 행위(예: 단서 줍기, 몸을 굽혀 살피기)를 우선 반영한다.
 
 ## 5) CLI 동작 기대치
 - 기본 `--story-id`:

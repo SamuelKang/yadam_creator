@@ -358,15 +358,40 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
     is_indoor_living = any(k in lower_corpus for k in ["오두막", "방", "실내", "사랑채", "안채", "대청", "온돌", "부엌"])
     is_market = any(k in lower_corpus for k in ["시장", "장터", "저잣거리", "시장통"])
     is_mountain_path = any(k in lower_corpus for k in ["산길", "고갯길", "산자락", "산등성이", "산 중턱"])
+    explicit_empty_space = any(
+        k in lower_corpus for k in [
+            "사람 없는", "동물 없는", "비어 있는", "실루엣 없이",
+            "배경 인물 없는", "군중 없는", "빈 공간", "empty",
+        ]
+    )
+    # Place references are more stable when they stay as empty establishing shots.
+    wants_empty_space = explicit_empty_space or not is_market
+    forbids_letterbox = True
 
     lines = [
         f"장소: {name}",
         f"분위기·시간·날씨·구조 앵커: {anchor_line}",
-        "구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 문맥에 맞는 생활 요소(지나가는 사람/군중/동물/장터 기척)를 과하지 않게 포함 가능",
+    ]
+    if wants_empty_space:
+        lines.append("구도: 와이드샷(장소 중심), 장소 구조와 공기감만 보여주는 empty establishing shot, 사람/동물/군중 없이 공간 자체에만 집중")
+    else:
+        lines.append("구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 문맥에 맞는 생활 요소(지나가는 사람/군중/동물/장터 기척)를 과하지 않게 포함 가능")
+    lines.extend([
         "밝기/색감: 노출을 충분히 올려 디테일이 읽히게, 암부 뭉침 금지, 생기 있는 색 대비와 중고채도 유지",
         "시간대: 대본에 야간 명시가 없으면 기본은 낮",
         "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음, 레터박스(상하 검은 여백) 없음",
-    ]
+    ])
+    if wants_empty_space:
+        lines.extend([
+            "공간 고정: 장소 자체만 보여주는 empty establishing shot으로 만든다.",
+            "인물/동물 금지: 사람, 실루엣, 군중, 경비, 행인, 말, 개, 사슴 등 생명체를 넣지 않는다.",
+            "연출 금지: 전투, 추격, 회의, 작업 중인 인물, 문서 읽는 장면처럼 사건성 있는 연출을 만들지 않는다.",
+        ])
+    if forbids_letterbox:
+        lines.extend([
+            "프레임 금지: 상하 검은 바, 흰 여백, 액자처럼 둘린 테두리, 패널 컷 분할을 절대 만들지 않는다.",
+            "화면 구성: 이미지가 프레임 전체를 자연스럽게 채우도록 하고, 영화식 레터박스 구도를 금지한다.",
+        ])
     if is_indoor_living:
         lines.extend([
             "실내 고증: 조선시대 생활방/온돌 구조를 유지한다(종이문, 낮은 목가구, 온돌 마루/방바닥 중심).",

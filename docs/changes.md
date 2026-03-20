@@ -1176,3 +1176,24 @@
 		- 소품 위 자연스러운 책/장부 글씨는 허용하되, 말풍선/효과음/캡션형 텍스트는 계속 금지하도록 기준을 명확화.
 - 이유
 	- `story27`에서 조익현이 broad binding 때문에 불필요한 연속 scene에 끼어들고, 이설/월화의 복식 상태가 후반부에서 되돌아가는 문제가 이미지 생성 전 prompt-stage에서 이미 보였기 때문.
+
+[2026-03-16] story27 clip continuity 보정에서 확인된 운영 노하우 문서화
+
+- 목적
+	- 다음 세션에서 `story27` 같은 아동 주인공 continuity 붕괴와 scene-level 오독을 더 빨리 복구하기 위함.
+- 변경
+	- `AGENTS.md`
+		- 아동 주인공 drift가 보이면 prompt에 체형/연령/머리장식/도포 색을 다시 잠그는 규칙 추가.
+		- 동일 인물 중복 생성이 보이면 `exactly one boy/one guard/...`처럼 인원 수를 직접 잠그라는 규칙 추가.
+		- 화상/관복/규수 복장처럼 상태 전환이 끝난 구간은 story-local YAML에도 함께 남기라는 규칙 추가.
+		- `EMPTY_IMAGE_BYTES` 반복 scene은 더 짧고 덜 민감한 prompt로 scene 단위 재시도하라는 운영 메모 추가.
+- 운영 메모
+	- `story27`에서 실제로 효과가 있었던 보정 패턴:
+		- 초반 궁 장면 `008~012`: “child-sized twelve-year-old boy”, `black headwrap`, `light cream scholar robe`를 같은 문장 구조로 반복해 초반 얼굴/복식 drift를 줄였다.
+		- `033`: 대본상 예를 갖춘 꿇음이 아니라 바닥 단서를 줍기 위해 몸을 낮추는 장면이므로, 포즈보다 실제 행위를 기준으로 prompt를 고쳐야 했다.
+		- `046, 048~051, 071, 074~076`: 월화/박 서방과 3인 장면은 `exactly one boy, one guard, and one shaman`이 중복 인물 억제에 유효했다.
+		- `125~139`: 화재 이후 이설은 `smoke-stained cream robe`, `bandaged forearm` 같은 회복 전 상태를 prompt에 다시 적어야 후반부에서 복장이 초기화되지 않았다.
+		- `137~141`: 후반 보상 구간은 `story27_variant_overrides.yaml`, `story27_scene_bindings.yaml`에 박 서방 관복/월화 규수 복장을 같이 남겨 두는 편이 다음 재실행 때 안전했다.
+		- `111`: `EMPTY_IMAGE_BYTES`는 긴 액션 prompt보다 더 짧고 단순한 “burning prison entrance + one boy runs into flames toward trapped guard” 식 prompt로 낮추자 복구됐다.
+- 이유
+	- 이번 `story27` 보정에서 문제의 대부분이 모델 자체보다 prompt 앵커 부족, exact cast 미고정, 상태 전환 YAML 누락, scene 동작 해석 오류에서 나왔기 때문.

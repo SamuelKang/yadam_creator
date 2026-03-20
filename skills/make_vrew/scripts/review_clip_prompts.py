@@ -17,7 +17,7 @@ GENERIC_PROMPT_PATTERNS = (
 )
 
 ENVIRONMENT_HINT_RE = re.compile(
-    r"\b(room|interior|indoors|courtyard|market|road|path|mountain|hut|house|kitchen|prison|gate|village|forest|river|shore|dock|yard|hall|office|street|room|lamp|rain|snow|night|dawn|dusk)\b",
+    r"\b(room|interior|indoors|courtyard|market|road|path|mountain|hut|house|kitchen|prison|gate|village|forest|river|shore|dock|yard|hall|office|street|room|lamp|rain|snow|night|dawn|dusk|tent|camp|war tent|campyard|barracks)\b",
     re.IGNORECASE,
 )
 

@@ -228,7 +228,9 @@ def _build_make_story_prompt(
 def _parse_synopsis_chapters(synopsis_text: str) -> list[dict[str, str | int]]:
     lines = synopsis_text.splitlines()
     chapter_starts: list[tuple[int, int, str]] = []
-    pattern = re.compile(r"^\s*(?:\*\*)?(\d+)\s*챕터\s*[:：]\s*(.+?)(?:\*\*)?\s*$")
+    pattern = re.compile(
+        r"^\s*(?:#+\s*)?(?:\*\*)?(\d+)\s*챕터\s*[:：]\s*(.+?)(?:\*\*)?\s*$"
+    )
     for idx, line in enumerate(lines):
         m = pattern.match(line)
         if m:
@@ -615,6 +617,7 @@ def main() -> None:
         raise ValueError(f"invalid story-id: {story_id}")
 
     _enable_run_log(work_dir, story_id)
+    prefer_existing_inputs = bool(args.through_tag_scene or args.through_place_refs or args.through_clips)
 
     if args.make_synopsis or args.make_sysnopsis:
         print(f"[INFO] step 1/1: generating synopsis for {story_id}")
@@ -623,6 +626,7 @@ def main() -> None:
             story_id,
             non_interactive=args.non_interactive,
             llm_model=_resolve_llm_model(args.llm_model),
+            prefer_existing=prefer_existing_inputs,
         )
         return
 
@@ -634,6 +638,7 @@ def main() -> None:
             target_chars=int(args.make_story or 500),
             non_interactive=args.non_interactive,
             llm_model=_resolve_llm_model(args.llm_model),
+            prefer_existing=prefer_existing_inputs,
         )
         return
 
@@ -643,6 +648,7 @@ def main() -> None:
         story_id,
         non_interactive=args.non_interactive,
         llm_model=_resolve_llm_model(args.llm_model),
+        prefer_existing=prefer_existing_inputs,
     ):
         return
     skip_story_generation = False
@@ -663,6 +669,7 @@ def main() -> None:
             target_chars=500,
             non_interactive=args.non_interactive,
             llm_model=_resolve_llm_model(args.llm_model),
+            prefer_existing=prefer_existing_inputs,
         ):
             return
     else:
@@ -698,7 +705,14 @@ def _run_synopsis_mode(root: Path, synopsis_input: str) -> str:
     return story_id
 
 
-def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool, llm_model: str) -> bool:
+def _run_story_synopsis_mode(
+    root: Path,
+    story_id: str,
+    *,
+    non_interactive: bool,
+    llm_model: str,
+    prefer_existing: bool = False,
+) -> bool:
     stories_dir = root / "stories"
     title_path = stories_dir / f"{story_id}.title"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
@@ -717,6 +731,11 @@ def _run_story_synopsis_mode(root: Path, story_id: str, *, non_interactive: bool
 
     if synopsis_path.exists():
         print(f"[INFO] synopsis file already exists: {synopsis_path}")
+        if prefer_existing:
+            print(f"[INFO] reuse existing synopsis without regeneration: {synopsis_path}")
+            if not title_hash_path.exists():
+                _atomic_write_text(title_hash_path, title_hash + "\n")
+            return True
         if non_interactive:
             previous_hash = ""
             if title_hash_path.exists():
@@ -746,6 +765,7 @@ def _run_make_story_mode(
     target_chars: int,
     non_interactive: bool,
     llm_model: str,
+    prefer_existing: bool = False,
 ) -> bool:
     stories_dir = root / "stories"
     synopsis_path = stories_dir / f"{story_id}.synopsis"
@@ -762,14 +782,28 @@ def _run_make_story_mode(
     if not synopsis_text:
         raise RuntimeError(f"시놉시스 파일이 비어 있습니다: {synopsis_path}")
     synopsis_hash = _text_sha256(synopsis_text)
-
-    chapters = _parse_synopsis_chapters(synopsis_text)
     generated_chapters: list[str] = []
     previous_chapter_text = ""
     start_index = 0
 
     if story_path.exists():
         print(f"[INFO] story file already exists: {story_path}")
+        existing_text = story_path.read_text(encoding="utf-8").strip()
+        existing_blocks = _parse_story_chapter_blocks(existing_text)
+        previous_hash = ""
+        if story_source_hash_path.exists():
+            previous_hash = story_source_hash_path.read_text(encoding="utf-8").strip()
+
+        if prefer_existing and existing_blocks:
+            last_no = int(existing_blocks[-1]["chapter_no"])
+            print(f"[INFO] reuse existing story without regeneration through Chapter {last_no}: {story_path}")
+            if not story_source_hash_path.exists():
+                _atomic_write_text(story_source_hash_path, synopsis_hash + "\n")
+            return True
+
+    chapters = _parse_synopsis_chapters(synopsis_text)
+
+    if story_path.exists():
         existing_text = story_path.read_text(encoding="utf-8").strip()
         existing_blocks = _parse_story_chapter_blocks(existing_text)
         previous_hash = ""

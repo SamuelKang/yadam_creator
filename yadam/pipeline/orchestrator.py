@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import time
 import re
@@ -757,6 +758,18 @@ class Orchestrator:
         v = (variant or "").strip()
         if not v:
             return out
+
+        # story30: ensure this disguise reads as a full pink silk outfit,
+        # not just a single pink sleeve patch.
+        if v == "torn_pink_silk":
+            forced = [
+                "full pink silk hanbok silhouette, both jeogori and chima in pink tones",
+                "visibly torn pink silk sleeves and ripped skirt hem",
+                "frayed seams and hanging loose silk threads",
+            ]
+            for x in reversed(forced):
+                if x not in out:
+                    out.insert(0, x)
 
         # Scene-level variant text often carries the strongest disguise cue.
         # Promote it into stable outfit/appearance anchors so adjacent clips
@@ -1559,8 +1572,11 @@ class Orchestrator:
                     eta = self._fmt_eta(avg * max(total - done, 0))
                     print(f"[4/7] characters {done}/{total} (skip={skip}, ok={gen_ok}, err={gen_err}, regen={regen}) ETA~{eta}: {ok_path.name}  -> gen")
 
-                    age_stage_for_prompt = (var if var else age_stage)
+                    age_stage_for_prompt = age_stage
+                    if var in ("아동", "청소년", "청년", "중년", "노년"):
+                        age_stage_for_prompt = var
                     anchors2 = self._filter_anchors_by_stage(list(anchors), age_stage_for_prompt)
+                    anchors2 = self._augment_anchors_with_variant(anchors2, var)
                     anchors2 = self._filter_risky_character_sheet_anchors(anchors2)
                     if self._is_child_stage(age_stage_for_prompt):
                         anchors2.append("나이: 약 5세(아동)")
@@ -1570,6 +1586,7 @@ class Orchestrator:
                         wardrobe_anchors = []
                     wardrobe_anchors = self._filter_anchors_by_stage(wardrobe_anchors, age_stage_for_prompt)
                     wardrobe_anchors = self._filter_anchors_by_variant(wardrobe_anchors, var)
+                    wardrobe_anchors = self._augment_anchors_with_variant(wardrobe_anchors, var)
                     wardrobe_anchors = self._filter_risky_character_sheet_anchors(wardrobe_anchors)
 
                     prompt = build_character_prompt(
@@ -1772,9 +1789,11 @@ class Orchestrator:
             s_ok = 0
             s_err = 0
             s_prompt_err = 0
+            s_consecutive_err = 0
             s_gen_time_sum = 0.0
             s_gen_count = 0
             s_t0 = time.time()
+            max_consecutive_err = int(os.environ.get("MAX_CONSECUTIVE_CLIP_ERRORS", "10") or "10")
 
             prev_ctx: List[Dict[str, Any]] = []
 
@@ -2019,15 +2038,146 @@ class Orchestrator:
                     return ptxt
                 # Remove direct quoted speech to reduce speech-bubble/text rendering.
                 ptxt = re.sub(r"[\"“][^\"”\n]{1,260}[\"”]", " ", ptxt)
-                # Remove "Name: ..." style dialogue fragments.
-                ptxt = re.sub(r"(?:^|\s)[가-힣A-Za-z]{1,16}\s*[:：]\s*[^.\n]{1,180}", " ", ptxt)
+                # Remove "Name: ..." style dialogue fragments (avoid stripping lowercase scene phrases like "entrance:")
+                ptxt = re.sub(
+                    r"(?:^|[\n\r]\s*|\s)(?:[A-Z][a-z]{1,15}|[가-힣]{2,8})\s*[:：]\s*[^.\n]{1,180}",
+                    " ",
+                    ptxt,
+                )
                 # Remove explicit speaking verbs followed by quoted payload patterns.
                 ptxt = re.sub(r"\b(?:saying|says|said|shouting|shouts|yelling|yells)\b[^.\n]{0,120}", " ", ptxt, flags=re.IGNORECASE)
                 ptxt = re.sub(r"\s+", " ", ptxt).strip()
                 return ptxt
 
-            def _apply_clip_safety_constraints(prompt_text: str) -> str:
+            def _character_role_hint(names: List[str]) -> str:
+                joined = " ".join([n or "" for n in names]).lower()
+                if any(k in joined for k in ("의원", "physician", "doctor")):
+                    return "village physician"
+                if any(k in joined for k in ("약초꾼", "herbalist")):
+                    return "mountain herbalist"
+                if any(k in joined for k in ("주모", "innkeeper", "tavern")):
+                    return "tavern innkeeper"
+                if any(k in joined for k in ("향리", "clerk")):
+                    return "local clerk"
+                if any(k in joined for k in ("내금위", "guard")):
+                    return "former palace guard"
+                if any(k in joined for k in ("손자", "소년", "boy")):
+                    return "young boy"
+                if any(k in joined for k in ("소녀", "girl")):
+                    return "young girl"
+                if any(k in joined for k in ("할머니", "노파", "elderly")):
+                    return "elderly woman"
+                if any(k in joined for k in ("아이", "child")):
+                    return "child"
+                return ""
+
+            def _character_descriptor(cobj: Dict[str, Any]) -> str:
+                name = str(cobj.get("name") or "")
+                aliases = cobj.get("aliases") if isinstance(cobj.get("aliases"), list) else []
+                names = [name] + [str(a) for a in aliases if a]
+                role_hint = _character_role_hint(names)
+                gender = str(cobj.get("gender") or "").lower()
+                age_stage = str(cobj.get("age_stage") or "").lower()
+
+                if role_hint:
+                    return f"the {role_hint} in Joseon-era hanbok"
+
+                age_map = {
+                    "아동": "young",
+                    "청년": "young",
+                    "중년": "middle-aged",
+                    "노년": "elderly",
+                }
+                gender_map = {"남": "man", "여": "woman"}
+                age = age_map.get(age_stage, "")
+                g = gender_map.get(gender, "")
+                if age and g:
+                    return f"the {age} Korean {g} in Joseon-era hanbok"
+                if g:
+                    return f"the Korean {g} in Joseon-era hanbok"
+                return "the Joseon-era villager in hanbok"
+
+            def _strip_character_names(prompt_text: str) -> str:
+                ptxt = str(prompt_text or "")
+                if not ptxt:
+                    return ptxt
+                generic_aliases = {
+                    "child", "boy", "girl", "man", "woman", "doctor", "physician",
+                    "아이", "소년", "소녀", "남자", "여자", "의원",
+                }
+                replacements: List[Tuple[str, str, bool]] = []
+                for cobj in char_map.values():
+                    if not isinstance(cobj, dict):
+                        continue
+                    desc = _character_descriptor(cobj)
+                    name = str(cobj.get("name") or "").strip()
+                    aliases = cobj.get("aliases") if isinstance(cobj.get("aliases"), list) else []
+                    cand = [name] + [str(a) for a in aliases if a]
+                    for n in cand:
+                        if not n or n in generic_aliases:
+                            continue
+                        is_ascii = all(ord(ch) < 128 for ch in n)
+                        replacements.append((n, desc, is_ascii))
+                # Replace longer names first to avoid partial overlaps.
+                replacements.sort(key=lambda x: len(x[0]), reverse=True)
+                for n, desc, is_ascii in replacements:
+                    if is_ascii:
+                        ptxt = re.sub(rf"\\b{re.escape(n)}\\b", desc, ptxt, flags=re.IGNORECASE)
+                    else:
+                        ptxt = ptxt.replace(n, desc)
+                ptxt = re.sub(r"\s+", " ", ptxt).strip()
+                return ptxt
+
+            def _strip_scene_romanized_names(prompt_text: str, s_obj: Dict[str, Any]) -> str:
+                ptxt = str(prompt_text or "")
+                if not ptxt:
+                    return ptxt
+                # Build descriptors for scene characters in order.
+                descs: List[str] = []
+                char_ids = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
+                for cid in char_ids:
+                    cobj = char_map.get(str(cid))
+                    if isinstance(cobj, dict):
+                        descs.append(_character_descriptor(cobj))
+                if not descs:
+                    return ptxt
+
+                # Allow common scene/opening words and place/style terms.
+                allow = {
+                    "Medium", "Wide", "Close", "Long", "Establishing",
+                    "Joseon", "Korea", "Jirisan", "Hanyang", "Pyeongyang",
+                    "Hanok", "Hanbok", "Yangban", "Gisaeng",
+                }
+                idx = 0
+                pat = re.compile(r"(^|[:.?!]\\s+)([A-Z][a-z]{2,})\\b")
+
+                def _repl(m: "re.Match") -> str:
+                    nonlocal idx
+                    prefix = m.group(1)
+                    word = m.group(2)
+                    if word in allow:
+                        return m.group(0)
+                    desc = descs[idx] if idx < len(descs) else "the Joseon-era villager in hanbok"
+                    idx += 1
+                    return f"{prefix}{desc}"
+
+                ptxt = pat.sub(_repl, ptxt)
+                ptxt = re.sub(r"\s+", " ", ptxt).strip()
+                return ptxt
+
+            def _is_dns_error(msg: str) -> bool:
+                s = (msg or "").lower()
+                return any(x in s for x in (
+                    "nodename nor servname provided",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "getaddrinfo failed",
+                ))
+
+            def _apply_clip_safety_constraints(prompt_text: str, s_obj: Dict[str, Any]) -> str:
                 ptxt = _sanitize_clip_prompt_text(_normalize_problematic_clip_terms(prompt_text))
+                ptxt = _strip_character_names(ptxt)
+                ptxt = _strip_scene_romanized_names(ptxt, s_obj)
                 if not ptxt:
                     return ptxt
                 if "[Safety constraints]" in ptxt:
@@ -2147,22 +2297,35 @@ class Orchestrator:
 
                 # prompt selection
                 prompt: Optional[str] = None
-                if had_err_file and policy_suspect:
-                    prompt = None
-                else:
-                    pu = img_meta.get("prompt_used")
-                    if isinstance(pu, str) and pu.strip():
-                        prompt = pu.strip()
+                prebuilt = str(s.get("llm_clip_prompt") or "").strip()
+                status_now = str(img_meta.get("status") or "").strip()
+
+                # When a scene is reset to pending for regeneration, prefer the
+                # current structure-stage prompt over stale prompt_used metadata.
+                # This lets manual prompt repairs in project.json actually take effect.
+                if status_now != "ok" and prebuilt and not (had_err_file and policy_suspect):
+                    prompt = prebuilt
+                    ph = img_meta.get("prompt_history")
+                    if not isinstance(ph, list):
+                        ph = []
+                    ph.append({"phase": "llm_extract_scene_prompt", "source": "structure_stage_pending_override"})
+                    img_meta["prompt_history"] = ph
 
                 if prompt is None:
-                    prebuilt = str(s.get("llm_clip_prompt") or "").strip()
-                    if prebuilt:
-                        prompt = prebuilt
-                        ph = img_meta.get("prompt_history")
-                        if not isinstance(ph, list):
-                            ph = []
-                        ph.append({"phase": "llm_extract_scene_prompt", "source": "structure_stage"})
-                        img_meta["prompt_history"] = ph
+                    if had_err_file and policy_suspect:
+                        prompt = None
+                    else:
+                        pu = img_meta.get("prompt_used")
+                        if isinstance(pu, str) and pu.strip():
+                            prompt = pu.strip()
+
+                if prompt is None and prebuilt:
+                    prompt = prebuilt
+                    ph = img_meta.get("prompt_history")
+                    if not isinstance(ph, list):
+                        ph = []
+                    ph.append({"phase": "llm_extract_scene_prompt", "source": "structure_stage"})
+                    img_meta["prompt_history"] = ph
 
                 if prompt is None:
                     try:
@@ -2204,7 +2367,7 @@ class Orchestrator:
                     print(f"  - prompt: FAIL -> {err_path.name} ({err_msg})")
                     continue
 
-                prompt = _apply_clip_safety_constraints(prompt)
+                prompt = _apply_clip_safety_constraints(prompt, s)
                 img_meta["prompt_original"] = img_meta.get("prompt_original") or prompt[:500]
                 img_meta["prompt_used"] = prompt
                 ref_paths = _scene_reference_image_paths(s)
@@ -2230,8 +2393,15 @@ class Orchestrator:
 
                 if status == "ok":
                     s_ok += 1
+                    s_consecutive_err = 0
                 else:
                     s_err += 1
+                    s_consecutive_err += 1
+                    if s_consecutive_err >= max_consecutive_err:
+                        print(f"[6/7] STOP: consecutive clip errors reached {s_consecutive_err} (threshold={max_consecutive_err})")
+                        s["image"] = meta_after
+                        self.db.save(project)
+                        break
 
                 # policy rewrite flow (interactive)
                 if status != "ok" and self._is_policy_error(last_err2):
@@ -2295,7 +2465,13 @@ class Orchestrator:
                 status2 = str(meta_after2.get("status") or "")
                 last_err3 = str(meta_after2.get("last_error") or "")
 
-                if status2 != "ok" and (not self._is_policy_error(last_err3)) and had_err_file and err_path.exists():
+                if (
+                    status2 != "ok"
+                    and (not self._is_policy_error(last_err3))
+                    and (not _is_dns_error(last_err3))
+                    and had_err_file
+                    and err_path.exists()
+                ):
                     if self._confirm(
                         "이미지 생성이 계속 실패합니다. LLM으로 clip 프롬프트를 재생성해서 다시 시도할까요?",
                         f"- scene={sid}\n- place={place_name}\n- chars={', '.join(char_names)}\n- error={last_err3}\n- file={err_path.name}"
