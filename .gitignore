@@ -9,6 +9,10 @@ venv/
 
 # Local outputs
 work/
+stories/*
+!stories/story00.txt
+story
+story*.title
 
 # OS
 .DS_Store
