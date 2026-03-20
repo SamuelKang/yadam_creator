@@ -343,12 +343,16 @@ class VrewFileExporter(VrewExporter):
         return base
 
     def _resolve_kenburns_info(self) -> Optional[Dict[str, Any]]:
-        enable = str(os.getenv("VREW_ENABLE_KENBURNS", "")).strip()
+        enable = str(os.getenv("VREW_ENABLE_KENBURNS", "1")).strip()
         tmpl = str(os.getenv("VREW_KENBURNS_TEMPLATE_PATH", "")).strip()
-        if enable not in ("1", "true", "True") and not tmpl:
+        if enable in ("0", "false", "False"):
             return None
         if not tmpl:
-            return None
+            return {
+                "type": "custom",
+                "from": {"scale": 1, "centerX": 0.5, "centerY": 0.5},
+                "to": {"scale": 0.8658536585365854, "centerX": 0.501219512195122, "centerY": 0.5229992378048781},
+            }
         p = Path(tmpl).expanduser()
         if not p.exists():
             return None
@@ -395,11 +399,13 @@ class VrewFileExporter(VrewExporter):
     ) -> Dict[str, Any]:
         tracks: Dict[str, Any] = {}
         scene_names: Dict[str, str] = {}
+        # Keep one logical Vrew scene for the whole timeline so global selection
+        # stays available even when per-image ken-burns tracks are applied.
+        unified_scene_id = str(uuid4())
+        scene_names[unified_scene_id] = "scene_all"
 
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
-            scene_id = str(uuid4())
-            scene_names[scene_id] = f"scene_{sid:03d}"
             text = str(scene.get("text") or "").strip()
             text_chunks = self._split_for_clips(
                 text,
@@ -504,7 +510,7 @@ class VrewFileExporter(VrewExporter):
                     t += w_dur
 
                 clips.append({
-                    "sceneId": scene_id,
+                    "sceneId": unified_scene_id,
                     "words": words,
                     "captionMode": "MANUAL",
                     "captions": [

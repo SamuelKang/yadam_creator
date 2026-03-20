@@ -2,6 +2,16 @@
 
 Use this reference after step 8 and before running step 9.
 
+Mandatory first gate:
+
+```bash
+python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
+python skills/make_vrew/scripts/repair_clip_context_continuity.py --story-id <story-id> --apply
+python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
+```
+
 ## Goal
 
 Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that tend to create text, speech bubbles, dialogue-heavy images, or blank/white-background clips.
@@ -25,6 +35,19 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
    - broad `scene_bindings` that inject the wrong recurring character into a whole run
    - child lead prompts that stop restating child scale/headwear/costume and start drifting older
    - recovery or reveal scenes where the wardrobe should already have changed but the prompt still points back to the old look
+8. Block static prompt language when scene text is dynamic:
+   - avoid `tense stillness`, static standing phrasing, or portrait-like wording when the script beat includes running, pulling, tearing, shouting, or confrontation
+9. Block clip prompts that use story-specific proper nouns directly.
+10. Block Joseon prop-shape drift in continuity-critical prop beats:
+   - `낫` scenes must not drift to western-scythe shape
+   - `짚신` scenes must not drift to modern sandal wording
+11. Block missing prop/state cues in script-critical beats:
+   - palanquin travel beats must visibly include palanquin
+   - blade-threat beats must visibly include blade proximity
+   - seal/lining evidence beats must visibly include the evidence fragment
+   - burning-evidence beats must visibly include flame/smoke
+12. Block emotion-acting omissions:
+   - when scene text carries fear/rage/grief/panic/relief beats, prompt must include readable facial expression and body gesture cues
 
 ## Rewrite Rules
 
@@ -44,6 +67,9 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
 - Prefer drawable acting cues over abstract labels:
   - better: `the guard leans in and keeps one hand near his sword`
   - worse: `grim resolve`, `subtle pressure`, `holding tense silence`
+- If scene text is emotionally strong, require explicit acting direction:
+  - facial: eyes, jaw, brows, tears, breath
+  - body: recoil, flinch, clenched posture, protective stance, abrupt turn, urgent hand gesture
 - For recurring guard/bodyguard characters, make them do something visible in the frame instead of leaving them as a stiff bystander.
 - For continuity-heavy runs, restate visual state changes directly:
   - bandaged arm
@@ -52,6 +78,8 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
   - noblewoman outfit after recovery
   - veil/staff removed after identity reveal
 - When the user reports a repeated defect pattern, treat it as a prompt-stage blocker for all neighboring scenes with the same setup.
+- For `낫` scenes, explicitly anchor Korean `ㄱ`/G-shaped sickle geometry with blade on inner corner.
+- For `짚신` scenes, explicitly anchor traditional woven straw sandals and avoid modern sole/strap wording.
 - Do not add modern objects, neon signage, printed lettering, or UI-like overlays.
 - If the existing prompt is already clean and concise, leave it unchanged.
 

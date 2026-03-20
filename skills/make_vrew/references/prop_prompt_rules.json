@@ -1,0 +1,118 @@
+{
+  "rules": [
+    {
+      "rule_id": "replace_weeping_trembling_with_composure",
+      "mode": "replace",
+      "text_patterns_any": [
+        "(차분|단정|고요|당당|침착|결연|단호|steady|composed|poised)"
+      ],
+      "prompt_replace_pattern": "weeping and trembling",
+      "prompt_replace_with": "steady controlled composure",
+      "repair_fix_id": "replace_weeping_trembling_with_composure"
+    },
+    {
+      "rule_id": "replace_blade_with_teacup",
+      "mode": "replace",
+      "text_patterns_any": [
+        "(찻잔|차를|차를 건네|tea|teacup)"
+      ],
+      "prompt_replace_pattern": "drawn blade at close range",
+      "prompt_replace_with": "offering a teacup with cautious courtesy",
+      "repair_fix_id": "replace_blade_with_teacup"
+    },
+    {
+      "rule_id": "remove_speechy_prompt_terms",
+      "mode": "replace",
+      "prompt_replace_pattern": "\\b(shout|shouting|yell|yelling)\\b",
+      "prompt_replace_with": "reacting with urgent gesture",
+      "repair_fix_id": "remove_speechy_prompt_terms"
+    },
+    {
+      "rule_id": "joseon_palanquin",
+      "mode": "cue",
+      "text_patterns_any": [
+        "(가마|palanquin)"
+      ],
+      "prompt_prop_pattern": "(palanquin|wheel-less)",
+      "missing_issue_ids": [
+        "palanquin_cue_missing"
+      ],
+      "repair_append_when_missing_prop": "A wheel-less Joseon palanquin is clearly visible."
+    },
+    {
+      "rule_id": "blade_threat",
+      "mode": "cue",
+      "text_patterns_any": [
+        "(칼날|칼끝|칼을\\s*들이대|목줄기|blade|sword)"
+      ],
+      "prompt_prop_pattern": "(blade|sword|drawn|raised blade|knife-edge)",
+      "missing_issue_ids": [
+        "blade_threat_cue_missing"
+      ],
+      "repair_append_when_missing_prop": "A drawn blade is visibly threatening at close range."
+    },
+    {
+      "rule_id": "seal_fragment",
+      "mode": "cue",
+      "text_patterns_any": [
+        "(인장|낙인|안감|비단\\s*조각|반쯤\\s*탄\\s*비단|seal|lining)"
+      ],
+      "prompt_prop_pattern": "(seal|lining|fragment|insignia|half-burned|burned silk)",
+      "missing_issue_ids": [
+        "seal_fragment_cue_missing"
+      ],
+      "repair_append_when_missing_prop": "A stamped silk lining fragment is shown as key evidence."
+    },
+    {
+      "rule_id": "burning_evidence",
+      "mode": "cue",
+      "text_patterns_all": [
+        "(인장|낙인|안감|비단\\s*조각|반쯤\\s*탄\\s*비단|seal|lining)",
+        "(촛불|불꽃|태우|연기|flame|burn)"
+      ],
+      "prompt_prop_pattern": "(flame|burn|smoke|candle)",
+      "missing_issue_ids": [
+        "flame_burning_cue_missing"
+      ],
+      "repair_append_when_missing_prop": "A candle flame chars the fragment and thin smoke rises."
+    },
+    {
+      "rule_id": "joseon_sickle",
+      "mode": "cue",
+      "text_pattern": "(낫|약초꾼|풀을\\s*베|베어\\s*내|sickle)",
+      "prompt_prop_pattern": "\\b(sickle|scythe)\\b",
+      "required_prompt_patterns": [
+        "(g-shaped|ㄱ-shaped|right-angle|l-shaped)",
+        "(inner\\s+blade|blade\\s+on\\s+the\\s+inner|inside\\s+corner)"
+      ],
+      "forbidden_prompt_pattern": "(western\\s+scythe|long\\s+curved\\s+scythe|european\\s+scythe)",
+      "missing_issue_ids": [
+        "joseon_sickle_shape_missing",
+        "joseon_sickle_inner_blade_missing"
+      ],
+      "forbidden_issue_id": "western_scythe_risk",
+      "repair_append_when_missing_prop": "A Korean G-shaped sickle with the blade on the inner corner is visible.",
+      "repair_append_when_missing_details": "Use a Korean G-shaped sickle with the blade on the inner corner, not a western scythe.",
+      "repair_replace_forbidden_with": "Korean G-shaped sickle"
+    },
+    {
+      "rule_id": "jipsin_footwear",
+      "mode": "cue",
+      "text_pattern": "(짚신|straw\\s*sandal|jipsin)",
+      "prompt_prop_pattern": "(jipsin|straw\\s+sandal)",
+      "required_prompt_patterns": [
+        "(woven|braided|straw\\s+weave|rope-woven)",
+        "(flat\\s+straw\\s+sole|toe\\s+loop)"
+      ],
+      "forbidden_prompt_pattern": "(modern\\s+sandal|rubber\\s+sole|strap\\s+sandal|flip-flop|sport\\s+sandal)",
+      "missing_issue_ids": [
+        "jipsin_cue_missing",
+        "jipsin_detail_missing"
+      ],
+      "forbidden_issue_id": "jipsin_modern_sandal_risk",
+      "repair_append_when_missing_prop": "Traditional woven straw sandals (jipsin) are clearly visible.",
+      "repair_append_when_missing_details": "The footwear shows a flat straw sole with rope-woven texture and a toe loop.",
+      "repair_replace_forbidden_with": "traditional woven straw sandals (jipsin)"
+    }
+  ]
+}

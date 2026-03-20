@@ -1,6 +1,10 @@
 # Clip Prompt Repair
 
-Use this reference when `review_clip_prompts.py` reports `generic_prompt`, `missing_place_tag`, or `missing_environment_cue`.
+Use this reference when either of these scripts reports issues:
+
+- `review_clip_prompts.py`
+- `check_post_step8_prompt_gate.py`
+- `repair_clip_context_continuity.py` (dry-run)
 
 ## Goal
 
@@ -30,6 +34,7 @@ For each flagged scene in `work/<story-id>/out/project.json`:
 
 - Keep it short English.
 - Remove all direct dialogue and visible-text instructions.
+- Remove proper nouns (character/place real names) from clip prompts.
 - Add concrete environment cues.
 - Add action/emotion/background detail.
 - Keep Joseon setting explicit when useful.
@@ -48,6 +53,18 @@ For each flagged scene in `work/<story-id>/out/project.json`:
 - For child lead continuity in general, restate small body scale, hat/headwrap, robe family, and any fresh injury/disguise anchor if nearby scenes have already drifted.
 - For Joseon palanquin scenes, state that adult attendants carry a wheel-less palanquin and the child passenger does not carry it.
 - For guard/bodyguard characters, replace passive wording like `stands beside him` or `watches tensely` with visible blocking such as shielding, crouching to inspect, half-drawing a sword, leaning close to warn, stepping in front, or scanning the surroundings.
+- If post-step8 gate reports `dynamic_text_but_static_prompt` or `stiff_standing_risk`, replace stillness phrases with concrete movement and blocking.
+- If post-step8 gate reports `expression_acting_cue_missing`, add explicit facial and body acting cues that match the script emotion beat.
+- If post-step8 gate reports `variant_cue_missing_pink_silk` or `variant_cue_missing_torn_silk`, explicitly restate the needed outfit state in the prompt.
+- If post-step8 gate reports `frozen_river_mismatch`, rewrite the background to match the script scene text and nearby place continuity.
+- Treat prop/state continuity as first-class repair targets before regeneration:
+  - palanquin travel beats must visibly include palanquin
+  - blade-threat beats must visibly include blade proximity
+  - seal/lining evidence beats must visibly include the evidence fragment
+  - burning-evidence beats must include flame/smoke state
+  - `낫` beats must specify Korean `ㄱ`/G-shaped sickle with blade on the inner corner (avoid western scythe wording)
+  - `짚신` beats must specify traditional woven straw sandals (`jipsin`) and avoid modern sandal/rubber-sole wording
+  - avoid speech-like verbs (`shout`, `yell`) and rewrite into gesture/blocking cues
 - For continuity-heavy scenes, lock the state that must not drift:
   - keep the same room/background when neighboring scenes are one continuous beat
   - specify the exact required cast and exclude extra unexplained people when needed
@@ -71,6 +88,8 @@ After repairing flagged scenes:
 2. Re-run:
 
 ```bash
+python skills/make_vrew/scripts/repair_clip_context_continuity.py --story-id <story-id> --apply
+python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
 python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
 ```
 

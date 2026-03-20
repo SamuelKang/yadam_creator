@@ -174,16 +174,76 @@ Only continue to step 9 when place references are visually consistent and semant
 ## Step 9 Prompt Review Stage
 
 Before step 9, Codex must review `scenes[].llm_clip_prompt` inside `work/<story-id>/out/project.json`.
+This review is mandatory immediately after step 8.
 
 First run:
+
+```bash
+python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+```
+
+Then run:
 
 ```bash
 python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
 ```
 
-Then Codex must fix suspicious prompts directly in `project.json`.
+Then run automatic context repair:
 
-If review finds missing place tags, generic prompts, or missing environment cues, Codex must repair the scene structure before step 9 instead of just stopping.
+```bash
+python skills/make_vrew/scripts/repair_clip_context_continuity.py --story-id <story-id> --apply
+```
+
+Then rerun both gates:
+
+```bash
+python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
+```
+
+Then Codex must fix any remaining suspicious prompts directly in `project.json`.
+
+If either review finds any issue, Codex must repair prompt/structure before step 9 instead of just stopping.
+
+`check_post_step8_prompt_gate.py` includes the required checks for:
+
+- proper nouns in clip prompts
+- script/prompt mismatch patterns (for example frozen-river wording in non-river scenes)
+- stiff pose risks (`tense stillness`, static standing language)
+- emotion/acting mismatch:
+  - if scene text has clear emotional beats, clip prompt must include readable facial/body acting cues
+- missing variant cues in continuity-critical scenes (for example `pink_silk_dress`, `torn_pink_silk`)
+- prop/state cue omissions in script-critical beats:
+  - palanquin travel beats missing palanquin cue
+  - blade-threat beats missing blade proximity cue
+  - seal/lining evidence beats missing evidence fragment cue
+  - burning-evidence beats missing flame/smoke cue
+- Joseon prop-shape risks in prompt wording:
+  - sickle beats must use Korean `ㄱ`/G-shaped sickle geometry with inner blade orientation
+  - `짚신` beats must keep traditional woven straw footwear cues and avoid modern sandal wording
+
+These prop checks are data-driven from:
+
+- `skills/make_vrew/references/prop_prompt_rules.json`
+
+`repair_clip_context_continuity.py` must automatically repair common adjacent-scene continuity defects before manual edits:
+
+- background/place hard cuts without transition cues
+- cast continuity drops in neighbor-linked beats
+- prop/action mismatches (for example tea-offer beat vs blade-threat prompt)
+- missing disguise/torn-costume cues for continuity-critical variants
+- prop/state cue omissions that often trigger expensive regen loops:
+  - palanquin travel beats missing palanquin cue
+  - blade-threat beats missing blade proximity cue
+  - seal/lining evidence beats missing evidence prop cue
+  - burning-evidence beats missing flame/smoke cue
+  - Joseon prop-shape omissions:
+    - sickle beat without Korean `ㄱ`/G-shape + inner blade cue
+    - `짚신` beat without woven straw/flat sole/toe-loop cue
+    - `짚신` beat using modern sandal wording
+  - speech-like prompt verbs (`shout`, `yelling`) that should be visual gesture cues
+- missing emotional performance cues:
+  - add facial expression + body gesture instructions when scene text carries fear, rage, grief, panic, relief, or similar strong emotional beats
 
 Read `references/clip_prompt_repair.md` when repairing flagged scenes.
 
@@ -197,6 +257,7 @@ Minimum review requirements:
 - do not rely on proper nouns such as character names, chapter names, or scene-number references for image understanding
 - make each prompt standalone so an image model can understand the cast, place, costume, and action without prior scene context
 - reject generic prompts that do not ground the scene in a concrete environment
+- reject prompt text that hard-codes static standing/stillness when the script beat is dynamic
 - reject scenes that still have no usable place tag or environment cue
 - review `scene_bindings` and `scene.characters` before clip generation when a whole neighboring run could drift together:
   - if one extra lead keeps appearing in scenes where the script does not show them, split or narrow the binding range before running step 9
