@@ -17,7 +17,7 @@ GENERIC_PROMPT_PATTERNS = (
 )
 
 ENVIRONMENT_HINT_RE = re.compile(
-    r"\b(room|interior|indoors|courtyard|market|road|path|mountain|hut|house|kitchen|prison|gate|village|forest|river|shore|dock|yard|hall|office|street|room|lamp|rain|snow|night|dawn|dusk|tent|camp|war tent|campyard|barracks)\b",
+    r"\b(room|interior|indoors|outdoor|courtyard|market|market lane|lane|road|path|mountain|hut|house|household|residence|noble household|kitchen|prison|gate|village|forest|river|shore|dock|yard|hall|office|court|courtroom|interrogation court|street|lamp|rain|snow|night|dawn|dusk|tent|camp|campyard|barracks|study|library|chamber|inner room)\b",
     re.IGNORECASE,
 )
 
@@ -38,13 +38,22 @@ def _find_issues(scene: Dict[str, Any], prompt: str) -> List[str]:
         issues.append("generic_prompt")
     if re.search(r"[\"“][^\"”\n]{1,260}[\"”]", ptxt):
         issues.append("quoted_dialogue")
-    if re.search(r"(?:^|\s)[가-힣A-Za-z]{1,16}\s*[:：]\s*[^.\n]{1,180}", ptxt):
+    # Treat true speaker-name dialogue as suspicious, but allow structural labels.
+    structural_labels = {"character", "characters", "setting", "style", "mood", "lighting", "identity", "shot"}
+    has_name_colon_dialogue = False
+    for m in re.finditer(r"(?:^|\s)([가-힣A-Za-z]{1,16})\s*[:：]\s*[^.\n]{1,180}", ptxt):
+        label = str(m.group(1) or "").strip().lower()
+        if label in structural_labels:
+            continue
+        has_name_colon_dialogue = True
+        break
+    if has_name_colon_dialogue:
         issues.append("name_colon_dialogue")
     if re.search(r"\b(?:say|says|said|shout|shouts|shouting|yell|yells|yelling|speech bubble|caption|subtitle)\b", ptxt, re.IGNORECASE):
         issues.append("speech_or_caption_term")
     if re.search(r"\b(?:visible text|letters|words on screen|text overlay|quote marks)\b", ptxt, re.IGNORECASE):
         issues.append("visible_text_term")
-    if len(ptxt) > 420:
+    if len(ptxt) > 520:
         issues.append("too_long")
     places = scene.get("places")
     if not isinstance(places, list) or not places:

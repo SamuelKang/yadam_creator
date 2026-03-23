@@ -53,6 +53,64 @@ def _age_stage_to_years(age_stage: str) -> Optional[int]:
     return table.get(s)
 
 
+def _normalize_social_class(value: str) -> str:
+    s = (value or "").strip().lower()
+    table = {
+        "yangban": "양반",
+        "noble": "양반",
+        "middle": "중인",
+        "jungin": "중인",
+        "commoner": "상민",
+        "common": "상민",
+        "peasant": "상민",
+        "lowborn": "천민",
+        "slave": "천민",
+        "servant": "천민",
+        "monk": "승려",
+        "shaman": "무속",
+        "unknown": "불명",
+    }
+    if s in table:
+        return table[s]
+    # Keep original when already in Korean taxonomy.
+    return (value or "").strip()
+
+
+def _normalize_wealth_level(value: str) -> str:
+    s = (value or "").strip().lower()
+    table = {
+        "rich": "부유",
+        "wealthy": "부유",
+        "affluent": "부유",
+        "middle": "보통",
+        "average": "보통",
+        "normal": "보통",
+        "poor": "빈곤",
+        "impoverished": "빈곤",
+        "unknown": "불명",
+    }
+    if s in table:
+        return table[s]
+    return (value or "").strip()
+
+
+def _normalize_wardrobe_tier(value: str) -> str:
+    s = (value or "").strip().upper()
+    table = {
+        "NOBLE": "T3",
+        "RICH": "T3",
+        "MIDDLE": "T2",
+        "COMMON": "T1",
+        "EVERYDAY": "T1",
+        "POOR": "T1",
+    }
+    if s in ("T1", "T2", "T3"):
+        return s
+    if s in table:
+        return table[s]
+    return "T2"
+
+
 def build_scene_content(scene_text: str, character_lines: List[str], place_line: Optional[str]) -> str:
     # 장면 프롬프트는 과밀해지지 않게: 장소 1 + 인물 0~2 + 행동/분위기 중심
     parts: List[str] = []
@@ -147,9 +205,9 @@ def build_character_prompt(
     # ---------------------------
     ctx = (context or "민간").strip()
     cr = (court_role or "").strip()
-    sc = (social_class or "").strip()
-    wl = (wealth_level or "").strip()
-    tier = (wardrobe_tier or "T2").strip().upper()
+    sc = _normalize_social_class(social_class)
+    wl = _normalize_wealth_level(wealth_level)
+    tier = _normalize_wardrobe_tier(wardrobe_tier)
     variant_norm = variant_line.strip()
     species_norm = (species or "인간").strip()
     is_pojol = _is_pojol_character(name, anchors, variant_norm, ctx, cr, wardrobe_anchors)
@@ -243,6 +301,7 @@ def build_character_prompt(
         elif tier == "T1":
             wardrobe_bits += [
                 "하류 복식: 검소한 무명 위주의 실용 차림",
+                "비단/광택 원단 금지, 무광 질감의 무명/삼베 계열",
                 "짚신/헝겊 띠 등 단순 소품, 과도한 오염/찢김/해짐 강조 금지",
             ]
         else:
@@ -254,6 +313,12 @@ def build_character_prompt(
         # 신분 힌트(추가 보정)
         if variant_norm == "노비":
             wardrobe_bits += ["노동/도피 흔적이 남은 검소하고 거친 복식"]
+        elif sc in ("official", "high_official", "문신", "무관"):
+            wardrobe_bits += [
+                "관직자 복식: 조선 관복 실루엣과 관모(사모/익선관 계열) 유지",
+                "일반 양반 갓(흑립) 대신 관직자 관모를 사용",
+                "품계 표현은 절제하고 단정한 관복 비례 유지",
+            ]
         elif sc == "양반":
             wardrobe_bits += ["사대부 느낌의 단정함(화려함보다 격식)"]
         elif sc == "중인":
@@ -317,10 +382,16 @@ def build_character_prompt(
         "요구: 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
     ]
     if age_stage == "아동":
-        content_lines += [
-            "아동 연출: 밝고 귀여운 인상, 맑은 눈빛, 건강한 혈색, 가벼운 미소 또는 호기심 표정",
-            "아동 금지: 병약/수척/비참/공포 분위기, 창백한 안색, 고통스러운 표정",
-        ]
+        if wl == "빈곤" or tier == "T1":
+            content_lines += [
+                "아동 연출: 생활감 있는 순박한 인상, 햇빛에 그을린 피부 톤, 과장되지 않은 경계 어린 눈빛",
+                "아동 금지: 부유층 도련님 같은 지나친 뽀얀 피부/윤기 나는 볼, 과도하게 해맑은 광고형 미소",
+            ]
+        else:
+            content_lines += [
+                "아동 연출: 밝고 귀여운 인상, 맑은 눈빛, 건강한 혈색, 가벼운 미소 또는 호기심 표정",
+                "아동 금지: 병약/수척/비참/공포 분위기, 창백한 안색, 고통스러운 표정",
+            ]
     elif age_stage == "청소년":
         content_lines += [
             "청소년 연출: 건강하고 또렷한 인상, 단정하고 생기 있는 표정",
@@ -335,6 +406,11 @@ def build_character_prompt(
         content_lines += [
             "동물 캐릭터 규칙: 인간형(의복/손/직립/인간 얼굴 비율)으로 의인화하지 않는다.",
             "동물 전신 비율/해부학을 정확히 유지하고, 해당 종의 귀·주둥이·다리 관절·발 형태를 보존한다.",
+        ]
+    else:
+        content_lines += [
+            "인간 캐릭터 규칙: 사람 얼굴/피부/비율을 유지하고 동물화 금지.",
+            "동물 특징 금지: 뿔, 주둥이, 발굽, 털로 덮인 동물형 얼굴, 수인/키메라형 혼합.",
         ]
     if species_norm == "소":
         content_lines += [
@@ -351,20 +427,32 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
     - hints는 orchestrator에서 visual_anchors를 우선 넘기도록 구성하는 것을 권장.
     - 여기서는 hints 내용을 '분위기/시간/날씨/구조 앵커'로 취급.
     """
-    anchors = [h.strip() for h in (hints or []) if isinstance(h, str) and h.strip()]
+    anchors = []
+    for h in (hints or []):
+        if not isinstance(h, str):
+            continue
+        t = h.strip()
+        if not t:
+            continue
+        # Drop placeholder-like junk anchors that can destabilize generation.
+        if t.lower() in {"hint", "hints", "placeholder", "todo", "n/a", "na", "none"}:
+            continue
+        anchors.append(t)
     anchor_line = ", ".join(anchors) if anchors else "대본 기반 장소, 분위기와 조명 중심, 과장 없는 연출"
 
     lower_corpus = f"{name} " + " ".join(anchors)
     is_indoor_living = any(k in lower_corpus for k in ["오두막", "방", "실내", "사랑채", "안채", "대청", "온돌", "부엌"])
     is_market = any(k in lower_corpus for k in ["시장", "장터", "저잣거리", "시장통"])
     is_mountain_path = any(k in lower_corpus for k in ["산길", "고갯길", "산자락", "산등성이", "산 중턱"])
+    is_temple = any(k in lower_corpus for k in ["절", "사찰", "암자", "불전", "대웅전"])
     explicit_empty_space = any(
         k in lower_corpus for k in [
             "사람 없는", "동물 없는", "비어 있는", "실루엣 없이",
             "배경 인물 없는", "군중 없는", "빈 공간", "empty",
         ]
     )
-    # Place references are more stable when they stay as empty establishing shots.
+    # Place references are more stable when they stay as sparse environment shots,
+    # but avoid wording that can trigger cinematic matte bars.
     wants_empty_space = explicit_empty_space or not is_market
     forbids_letterbox = True
 
@@ -373,24 +461,29 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
         f"분위기·시간·날씨·구조 앵커: {anchor_line}",
     ]
     if wants_empty_space:
-        lines.append("구도: 와이드샷(장소 중심), 장소 구조와 공기감만 보여주는 empty establishing shot, 사람/동물/군중 없이 공간 자체에만 집중")
+        lines.append(
+            "구도: 장소 중심의 full-frame 환경샷. 배경 디테일이 화면 상하좌우 끝까지 연속되게 채우고, 사람/동물/군중 없이 공간 자체에만 집중"
+        )
     else:
-        lines.append("구도: 와이드샷(장소 중심), 공간감이 느껴지도록, 문맥에 맞는 생활 요소(지나가는 사람/군중/동물/장터 기척)를 과하지 않게 포함 가능")
+        lines.append(
+            "구도: 장소 중심의 full-frame 환경샷. 배경 디테일이 화면 상하좌우 끝까지 연속되게 채우고, 문맥에 맞는 생활 요소(군중/장터 기척)는 과하지 않게 포함"
+        )
     lines.extend([
         "밝기/색감: 노출을 충분히 올려 디테일이 읽히게, 암부 뭉침 금지, 생기 있는 색 대비와 중고채도 유지",
         "시간대: 대본에 야간 명시가 없으면 기본은 낮",
-        "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음, 레터박스(상하 검은 여백) 없음",
+        "요구: 16:9, 텍스트 없음, 자막 없음, 로고 없음, 워터마크 없음",
+        "프레임 요구: edge-to-edge full-frame, 상/하/좌/우 어느 면에도 단색 띠(검정/흰색) 금지",
     ])
     if wants_empty_space:
         lines.extend([
-            "공간 고정: 장소 자체만 보여주는 empty establishing shot으로 만든다.",
+            "공간 고정: 장소 자체만 보여주는 환경 레퍼런스 샷으로 만든다.",
             "인물/동물 금지: 사람, 실루엣, 군중, 경비, 행인, 말, 개, 사슴 등 생명체를 넣지 않는다.",
             "연출 금지: 전투, 추격, 회의, 작업 중인 인물, 문서 읽는 장면처럼 사건성 있는 연출을 만들지 않는다.",
         ])
     if forbids_letterbox:
         lines.extend([
             "프레임 금지: 상하 검은 바, 흰 여백, 액자처럼 둘린 테두리, 패널 컷 분할을 절대 만들지 않는다.",
-            "화면 구성: 이미지가 프레임 전체를 자연스럽게 채우도록 하고, 영화식 레터박스 구도를 금지한다.",
+            "화면 구성: 배경 질감과 사물이 프레임 모서리까지 자연스럽게 이어지게 하고, 상하좌우 단색 마진을 금지한다.",
         ])
     if is_indoor_living:
         lines.extend([
@@ -410,6 +503,18 @@ def build_place_prompt(era: EraProfile, style: StyleProfile, name: str, hints: L
             "배경 요소: 바위, 메마른 흙길, 경사진 비탈, 드문 나무, 밤바람, 먼 산 능선 위주로 구성하고 사람 실루엣은 금지한다.",
             "화풍 고정: 한국 웹툰풍 선화와 명확한 실루엣을 유지하되, 쓸데없는 배경 인물 서사는 만들지 않는다.",
         ])
+    if is_temple:
+        lines.extend([
+            "사찰 연출: 기와지붕 처마, 단청, 석등, 돌계단, 마당 바닥 질감이 프레임 가장자리까지 이어지게 구성한다.",
+            "배경 금지: 흰색/검정 단색 배경, 스튜디오 배경, 피사체만 떠 있는 고립 구도.",
+            "화면 고정: 하늘·지붕·마당 요소가 동시에 보이게 하여 상하좌우 빈 띠가 생기지 않게 한다.",
+        ])
 
+    # Place prompts avoid cinematic wording in style suffix to reduce matte-bar relapse.
+    place_style_suffix = (
+        style.suffix
+        .replace("시네마틱 조명", "균일하고 자연스러운 조명")
+        .replace("영화적 라이팅", "균일한 자연광/실내등 조명")
+    )
     content = "\n".join(lines)
-    return PromptParts(era.prefix, content, style.suffix, era.safety).build()
+    return PromptParts(era.prefix, content, place_style_suffix, era.safety).build()

@@ -916,7 +916,7 @@ class Orchestrator:
         return: (work_left, total_jobs, remaining_jobs)
         - selected main chars(주인공+조연 일부)만 기준.
         """
-        selected = self._pick_main_characters(project, max_supporting=4)
+        selected = self._pick_main_characters(project, max_supporting=8)
         total = 0
         remain = 0
 
@@ -1504,7 +1504,9 @@ class Orchestrator:
                 ):
                     return project
 
-            selected_chars = self._pick_main_characters(project, max_supporting=4)
+            # Keep a wider supporting set so story-critical side characters
+            # (e.g., witness/hostage/court-lady roles) also receive reference images.
+            selected_chars = self._pick_main_characters(project, max_supporting=8)
 
             total = 0
             for c in selected_chars:
@@ -2165,6 +2167,87 @@ class Orchestrator:
                 ptxt = re.sub(r"\s+", " ", ptxt).strip()
                 return ptxt
 
+            def _character_ab_descriptor(cobj: Dict[str, Any], variant: str) -> str:
+                gender = str(cobj.get("gender") or "")
+                age_stage = str(variant or cobj.get("age_stage") or "")
+                g = "woman" if gender == "여" else ("man" if gender == "남" else "person")
+                age = "young" if age_stage in ("아동", "청년") else ("middle-aged" if age_stage == "중년" else ("elderly" if age_stage == "노년" else ""))
+                if age:
+                    return f"{age} Korean {g} in Joseon-era hanbok"
+                return f"Korean {g} in Joseon-era hanbok"
+
+            def _build_scene_identity_lock(prompt_text: str, s_obj: Dict[str, Any]) -> str:
+                ptxt = str(prompt_text or "").strip()
+                if not ptxt:
+                    return ptxt
+                if re.search(r"\bcharacter\s*a\b", ptxt, flags=re.IGNORECASE) and re.search(r"\bcharacter\s*b\b", ptxt, flags=re.IGNORECASE):
+                    return ptxt
+
+                role_term_re = re.compile(
+                    r"(adopted daughter|true daughter|biological daughter|foster daughter|real daughter|adoptive daughter|"
+                    r"adopted son|true son|biological son|foster son|real son|adoptive son|양녀|친딸|양자|친아들)",
+                    re.IGNORECASE,
+                )
+                pair_lock_re = re.compile(
+                    r"(two women only|two men only|two people only|no identity swap|no swap|identity swap)",
+                    re.IGNORECASE,
+                )
+                if not (role_term_re.search(ptxt) or pair_lock_re.search(ptxt)):
+                    return ptxt
+
+                char_ids = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
+                selected = self._select_scene_character_ids(
+                    str(s_obj.get("text", "")),
+                    char_ids,
+                    char_map,
+                    limit=2,
+                )
+                if len(selected) < 2:
+                    return ptxt
+
+                inst_map: Dict[str, str] = {}
+                ci_rows = s_obj.get("character_instances", [])
+                if isinstance(ci_rows, list):
+                    for row in ci_rows:
+                        if isinstance(row, dict) and isinstance(row.get("char_id"), str):
+                            inst_map[str(row.get("char_id"))] = str(row.get("variant") or "")
+
+                lines: List[str] = []
+                for idx, cid in enumerate(selected[:2]):
+                    cobj = char_map.get(str(cid))
+                    if not isinstance(cobj, dict):
+                        continue
+                    variant = inst_map.get(str(cid), "")
+                    age_stage = variant or str(cobj.get("age_stage") or "")
+                    visual = self._filter_anchors_by_stage(
+                        self._clean_str_list(cobj.get("visual_anchors") or []),
+                        age_stage,
+                    )
+                    visual = self._augment_anchors_with_variant(visual, variant)
+                    wardrobe = self._filter_anchors_by_stage(
+                        self._clean_str_list(cobj.get("wardrobe_anchors") or []),
+                        age_stage,
+                    )
+                    wardrobe = self._filter_anchors_by_variant(wardrobe, variant)
+                    wardrobe = self._augment_anchors_with_variant(wardrobe, variant)
+
+                    visual_txt = ", ".join(visual[:2]) if visual else "keep distinct facial structure"
+                    wardrobe_txt = ", ".join(wardrobe[:2]) if wardrobe else "keep distinct outfit silhouette"
+                    tag = "A" if idx == 0 else "B"
+                    desc = _character_ab_descriptor(cobj, variant)
+                    lines.append(
+                        f"Character {tag}: {desc}; visual anchors={visual_txt}; wardrobe anchors={wardrobe_txt}."
+                    )
+
+                if len(lines) < 2:
+                    return ptxt
+
+                identity_block = (
+                    "Identity lock: Keep exactly one Character A and exactly one Character B in frame. "
+                    "Never swap Character A/B face, body type, or outfit."
+                )
+                return f"{ptxt}\n\n{identity_block}\n" + "\n".join(lines)
+
             def _is_dns_error(msg: str) -> bool:
                 s = (msg or "").lower()
                 return any(x in s for x in (
@@ -2178,6 +2261,7 @@ class Orchestrator:
                 ptxt = _sanitize_clip_prompt_text(_normalize_problematic_clip_terms(prompt_text))
                 ptxt = _strip_character_names(ptxt)
                 ptxt = _strip_scene_romanized_names(ptxt, s_obj)
+                ptxt = _build_scene_identity_lock(ptxt, s_obj)
                 if not ptxt:
                     return ptxt
                 if "[Safety constraints]" in ptxt:

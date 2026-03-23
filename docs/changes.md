@@ -32,6 +32,21 @@
 
 변경 이력
 
+[2026-03-23] 역할형 인물 라벨(adopted/true daughter 등) A/B 시각 앵커 자동 잠금
+
+- 목적
+	- `the adopted daughter`, `the true daughter` 같은 역할형 표현만으로는 이미지 LLM이 인물을 안정적으로 구분하지 못해 identity swap이 발생하는 문제를 줄이기 위함.
+- 변경
+	- `yadam/pipeline/orchestrator.py`
+	- clip 프롬프트 정규화 단계에 역할형 라벨 감지 규칙을 추가.
+	- 감지 시 `Character A/B` identity lock 문구와 각 인물의 `visual anchors`/`wardrobe anchors`를 자동 삽입.
+	- `skills/make_vrew/scripts/check_post_step8_prompt_gate.py`
+	- 역할형 라벨이 있으나 `Character A/B` 잠금 또는 시각 앵커가 없는 프롬프트를 `post-step8` 게이트에서 실패로 탐지.
+	- `skills/make_vrew/scripts/repair_clip_context_continuity.py`
+	- 역할형 라벨 장면에 대해 `--apply` 시 `Character A/B` identity lock을 자동 보정하도록 확장.
+- 영향
+	- 이후 story의 clip 생성에서 역할형 표현 기반 인물 혼선/교차를 줄이고, step8 점검에서 재발을 조기 차단.
+
 [2026-03-15] make_vrew clip prompt 규칙에 standalone 이미지 프롬프트와 guard 연기 지침 추가
 
 - 목적

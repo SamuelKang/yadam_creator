@@ -32,6 +32,8 @@
   - shot-first, 짧은 영어 scene prompt 지향
   - 직접 대사/인용부호 금지(행동 묘사로 대체)
   - 조선 고증 규칙 유지(실내 서양식 fireplace 금지, 한국형 `ㄱ`자 낫 같은 생활 소도구 실루엣 유지 등)
+  - clip image용 `llm_clip_prompt`의 최종 작성 책임은 Codex에 있다.
+  - LLM extract 결과는 초안으로만 취급하고, 비어 있거나 품질 미달이면 Codex가 `project.json`에서 직접 생성/보정 후 다음 단계로 진행한다.
 - 인물 일관성:
   - 실명 canonical + 역할명 alias
   - 성장 서사는 분리 캐릭터 대신 variants 우선

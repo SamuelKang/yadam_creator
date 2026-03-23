@@ -176,6 +176,12 @@ Only continue to step 9 when place references are visually consistent and semant
 Before step 9, Codex must review `scenes[].llm_clip_prompt` inside `work/<story-id>/out/project.json`.
 This review is mandatory immediately after step 8.
 
+Codex ownership rule (mandatory):
+
+- `llm_clip_prompt` final content is owned by Codex, not by raw extractor output.
+- If `llm_extract` is skipped/failed or any scene has empty `llm_clip_prompt`, Codex must generate/fill prompts directly in `project.json` before any step-9 review.
+- Even when extractor prompts exist, treat them as draft only; Codex must normalize and repair to pass all gates before clips.
+
 First run:
 
 ```bash
@@ -221,6 +227,12 @@ If either review finds any issue, Codex must repair prompt/structure before step
 - Joseon prop-shape risks in prompt wording:
   - sickle beats must use Korean `ㄱ`/G-shaped sickle geometry with inner blade orientation
   - `짚신` beats must keep traditional woven straw footwear cues and avoid modern sandal wording
+- intro retention-risk check:
+  - opening scenes (`001~005`) must not collapse into near-identical establishing prompts
+  - shot progression and action focus must be varied to preserve early watch retention
+- cut-transition intensity check:
+  - repetitive template prompts (for example static acting boilerplate or repeated empty-establishing wording) are treated as `cut_transition_weak`
+  - Codex must increase shot variation and action direction before step 9
 
 These prop checks are data-driven from:
 
@@ -232,6 +244,11 @@ These prop checks are data-driven from:
 - cast continuity drops in neighbor-linked beats
 - prop/action mismatches (for example tea-offer beat vs blade-threat prompt)
 - missing disguise/torn-costume cues for continuity-critical variants
+- opening-scene repetition risk:
+  - if `001~005` prompts are repetitive (for example repeated `empty establishing shot`), auto-rewrite to differentiated shots/actions
+- global cut-intensity boost:
+  - repetitive/boilerplate prompts are auto-rewritten with rotating camera composition and text-driven action direction
+  - avoid static standing look by default unless the script explicitly demands stillness
 - prop/state cue omissions that often trigger expensive regen loops:
   - palanquin travel beats missing palanquin cue
   - blade-threat beats missing blade proximity cue

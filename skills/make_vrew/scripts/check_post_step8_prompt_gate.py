@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
@@ -14,6 +15,10 @@ PROP_RULE_PATH = ROOT / "skills" / "make_vrew" / "references" / "prop_prompt_rul
 
 STATIC_PROMPT_RE = re.compile(
     r"\b(tense stillness|stillness|static portrait|front-facing|standing still|calm stillness)\b",
+    re.IGNORECASE,
+)
+BORING_TEMPLATE_RE = re.compile(
+    r"(empty establishing shot|Korean historical-drama mood in clean webtoon style|Readable facial expression and active body gesture match the dramatic beat)",
     re.IGNORECASE,
 )
 
@@ -31,6 +36,18 @@ PROMPT_ACTING_CUE_RE = re.compile(
     r"(facial|expression|eyes|gaze|jaw|brow|eyebrow|frown|grimace|tears|tear-streaked|clenched|breathing|panting|posture|gesture|recoil|flinch|stagger|hesitat|protective stance|urgent movement|leans in|turns abruptly|shaking hands)",
     re.IGNORECASE,
 )
+ROLE_ONLY_TERM_RE = re.compile(
+    r"(adopted daughter|true daughter|biological daughter|foster daughter|real daughter|adoptive daughter|"
+    r"adopted son|true son|biological son|foster son|real son|adoptive son|양녀|친딸|양자|친아들)",
+    re.IGNORECASE,
+)
+CHAR_AB_RE = re.compile(r"\bcharacter\s*(a|b)\b", re.IGNORECASE)
+VISUAL_ANCHOR_RE = re.compile(
+    r"(slim|slimmer|heavyset|chubby|round face|double chin|thick neck|broad torso|fuller arms|"
+    r"plain hanbok|ornate silk|floral silk|visual anchors|wardrobe anchors)",
+    re.IGNORECASE,
+)
+INTRO_SCENE_COUNT = 5
 
 
 def _load_project(story_id: str) -> Dict[str, Any]:
@@ -158,15 +175,45 @@ def _issues_for_scene(scene: Dict[str, Any], proper_nouns: Set[str], prop_rules:
     # 2) Static/stiff prompt language.
     if STATIC_PROMPT_RE.search(prompt):
         issues.append("stiff_standing_risk")
+    if BORING_TEMPLATE_RE.search(prompt):
+        issues.append("cut_transition_weak")
 
     # 3) Dynamic script vs static prompt conflict.
     text = str(scene.get("text") or "")
+    low = prompt.lower()
     if DYNAMIC_TEXT_RE.search(text) and STATIC_PROMPT_RE.search(prompt):
         issues.append("dynamic_text_but_static_prompt")
 
     # 3-1) Script emotion/acting beat should have facial/body acting cue in prompt.
-    if EMOTION_TEXT_RE.search(text) and not PROMPT_ACTING_CUE_RE.search(prompt):
+    is_empty_establishing = "empty establishing shot" in low
+    has_people = bool(scene.get("characters")) or bool(scene.get("character_instances"))
+    if EMOTION_TEXT_RE.search(text) and not PROMPT_ACTING_CUE_RE.search(prompt) and not is_empty_establishing and has_people:
         issues.append("expression_acting_cue_missing")
+
+    # 3-2) Role-only labels (e.g., adopted daughter / true daughter) need A/B identity lock + visual anchors.
+    if ROLE_ONLY_TERM_RE.search(prompt):
+        low = prompt.lower()
+        has_pair_role_terms = (
+            ("adopted daughter" in low and "true daughter" in low)
+            or ("adopted son" in low and "true son" in low)
+            or ("양녀" in prompt and "친딸" in prompt)
+            or ("양자" in prompt and "친아들" in prompt)
+        )
+        has_pair_lock_terms = bool(
+            re.search(r"(two women only|two men only|two people only|no identity swap|no swap|identity swap)", prompt, re.IGNORECASE)
+        )
+        explicit_absence = bool(
+            re.search(
+                r"(no\s+true daughter|no\s+adopted daughter|no\s+true son|no\s+adopted son|not present|not in frame|exactly one)",
+                prompt,
+                re.IGNORECASE,
+            )
+        )
+        if (has_pair_role_terms or has_pair_lock_terms) and not explicit_absence:
+            if len(CHAR_AB_RE.findall(prompt)) < 2:
+                issues.append("role_label_identity_lock_missing")
+            if not VISUAL_ANCHOR_RE.search(prompt):
+                issues.append("role_label_visual_anchor_missing")
 
     # 4) Known high-impact mismatch pattern.
     if "frozen river shore" in prompt.lower() and not RIVER_TEXT_RE.search(text):
@@ -174,7 +221,6 @@ def _issues_for_scene(scene: Dict[str, Any], proper_nouns: Set[str], prop_rules:
 
     # 5) Variant cue must be visible in prompt when Yeonhwa variants are active.
     y_variants = _variant_set(scene, "char_001")
-    low = prompt.lower()
     if "pink_silk_dress" in y_variants and not any(k in low for k in ("pink", "silk", "disguise")):
         issues.append("variant_cue_missing_pink_silk")
     if "torn_pink_silk" in y_variants and not any(k in low for k in ("torn", "ripped", "frayed", "pink silk")):
@@ -219,6 +265,40 @@ def _issues_for_scene(scene: Dict[str, Any], proper_nouns: Set[str], prop_rules:
     return issues
 
 
+def _first_n_scenes_by_id(project: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
+    scenes = [s for s in (project.get("scenes") or []) if isinstance(s, dict) and int(s.get("id", 0) or 0) > 0]
+    scenes.sort(key=lambda s: int(s.get("id", 0) or 0))
+    return scenes[:n]
+
+
+def _normalize_intro_prompt(prompt: str) -> str:
+    low = str(prompt or "").strip().lower()
+    if not low:
+        return ""
+    low = re.sub(
+        r"^(extreme wide aerial shot|wide street-level shot|tight two-shot|over-shoulder shot|medium shot|wide shot|close-up|two-shot)\s+",
+        "",
+        low,
+    )
+    low = re.sub(r"\s+", " ", low)
+    return low.strip(" ,.")
+
+
+def _intro_scene_transition_weak(project: Dict[str, Any]) -> List[int]:
+    intro = _first_n_scenes_by_id(project, INTRO_SCENE_COUNT)
+    if len(intro) < INTRO_SCENE_COUNT:
+        return []
+
+    prompts = [str(s.get("llm_clip_prompt") or "").strip() for s in intro]
+    lows = [p.lower() for p in prompts]
+    empty_count = sum("empty establishing shot" in p for p in lows)
+    norms = [_normalize_intro_prompt(p) for p in prompts if p.strip()]
+    common = Counter(norms).most_common(1)[0][1] if norms else 0
+    if empty_count >= 2 or common >= 3:
+        return [int(s.get("id", 0) or 0) for s in intro]
+    return []
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Post-step8 mandatory clip-prompt gate: proper nouns, mismatch, stiff pose, and Joseon prop/state risks."
@@ -246,6 +326,25 @@ def main() -> int:
                 "prompt": str(scene.get("llm_clip_prompt") or ""),
             }
         )
+
+    intro_problem_ids = set(_intro_scene_transition_weak(project))
+    if intro_problem_ids:
+        for row in problems:
+            if int(row.get("scene_id", 0) or 0) in intro_problem_ids and "intro_scene_transition_weak" not in row["issues"]:
+                row["issues"].append("intro_scene_transition_weak")
+        existing = {int(r.get("scene_id", 0) or 0) for r in problems}
+        for sid in sorted(intro_problem_ids):
+            if sid in existing:
+                continue
+            scene = next((s for s in (project.get("scenes") or []) if isinstance(s, dict) and int(s.get("id", 0) or 0) == sid), {})
+            problems.append(
+                {
+                    "scene_id": sid,
+                    "chapter_title": str(scene.get("chapter_title") or ""),
+                    "issues": ["intro_scene_transition_weak"],
+                    "prompt": str(scene.get("llm_clip_prompt") or ""),
+                }
+            )
 
     if not problems:
         print("OK: post-step8 prompt gate passed")
