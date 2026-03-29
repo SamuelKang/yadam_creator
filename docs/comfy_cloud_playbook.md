@@ -22,6 +22,29 @@ COMFYUI_API_KEY='...'
 COMFYUI_API_KEY_HEADER='X-API-Key'
 ```
 
+## 2.1) 모델 선택 정책 (기본값 + 오버라이드)
+- 기본 정책:
+  - Comfy 기본 모델은 `z_image_turbo_bf16.safetensors`
+  - 모델은 언제든 오버라이드 가능
+- `skills/make_vrew/scripts/run_through_place_refs.sh` 기준:
+  - 기본 실행: `run_through_place_refs.sh <story-id>` -> Z-Image Turbo
+  - 모델 지정: `run_through_place_refs.sh <story-id> <comfy-model>`
+  - 환경변수 지정: `COMFYUI_MODEL=<comfy-model>`
+  - 워크플로 강제: `COMFYUI_WORKFLOW_PATH=<path>`
+  - 워크플로 미지정 시: `yadam.cli`가 모델명 기준 자동 선택 (`z_image*`/`flux*`/기타)
+- 예시:
+```bash
+# 기본 (Z-Image Turbo)
+skills/make_vrew/scripts/run_through_place_refs.sh story15
+
+# Flux로 실행
+skills/make_vrew/scripts/run_through_place_refs.sh story15 flux1-schnell.safetensors
+
+# 환경변수로 모델 지정
+COMFYUI_MODEL=flux1-schnell.safetensors \
+  skills/make_vrew/scripts/run_through_place_refs.sh story15
+```
+
 ## 3) Cloud API 핵심 엔드포인트
 - 워크플로 제출: `POST /api/prompt`
 - 현재 프롬프트 실행 정보: `GET /api/prompt`

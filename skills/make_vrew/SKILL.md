@@ -126,8 +126,10 @@ skills/make_vrew/scripts/run_through_place_refs.sh <story-id>
 
 `run_through_place_refs.sh` default behavior:
 
-- if `COMFYUI_API_KEY` exists: use Comfy Cloud + `z_image_turbo_bf16.safetensors`
-- default workflow: `yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json`
+- if `COMFYUI_API_KEY` exists: use Comfy Cloud
+- default model: `z_image_turbo_bf16.safetensors`
+- model override: `COMFYUI_MODEL` env or script 2nd arg (`run_through_place_refs.sh <story-id> <comfy-model>`)
+- workflow override: `COMFYUI_WORKFLOW_PATH` (if unset, CLI auto-selects workflow from model)
 - if key is missing: fallback to `gemini_flash_image`
 
 This must stop after step 8. It must not continue into clip generation or export.

@@ -32,6 +32,25 @@
 
 변경 이력
 
+[2026-03-29] Comfy 모델 선택 가능 유지 + Z-Image Turbo 기본값 정책 문서/스크립트 정렬
+
+- 목적
+	- story별 임시 설정 없이 Comfy 모델을 유연하게 바꾸되, 기본 품질 경로는 Z-Image Turbo로 고정하기 위함.
+- 변경
+	- `skills/make_vrew/scripts/run_through_place_refs.sh`
+		- 모델 선택 입력 추가: 2번째 인자 또는 `COMFYUI_MODEL`.
+		- 기본 모델을 `z_image_turbo_bf16.safetensors`로 유지.
+		- `COMFYUI_WORKFLOW_PATH` 미지정 시 `--comfy-workflow`를 강제하지 않고 CLI 모델 기반 자동 선택 사용.
+	- `scripts/comfy_cloud_charsheet_workflow.py`
+		- 기본 모델을 `z_image_turbo_bf16.safetensors`로 변경.
+		- 모델명(`z_image`/`flux`/기타)에 따른 기본 워크플로 자동 선택 로직 추가.
+	- 문서 업데이트:
+		- `docs/comfy_cloud_playbook.md`
+		- `docs/cli_usage.md`
+		- `skills/make_vrew/SKILL.md`
+- 영향
+	- Comfy Cloud 실행 시 기본은 Z-Image Turbo로 일관되게 유지되며, 필요할 때 flux 등 다른 모델로 즉시 전환 가능.
+
 [2026-03-29] Comfy Cloud 기본 경로를 Z-Image Turbo 중심으로 정리 + place 비실사 운영 규칙 코드화
 
 - 목적

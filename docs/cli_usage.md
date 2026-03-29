@@ -151,6 +151,14 @@ python -m yadam.cli \
   --comfy-workflow yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json
 ```
 
+Comfy 모델 선택 규칙:
+- 기본 모델: `z_image_turbo_bf16.safetensors`
+- 모델 오버라이드: `--image-model <model>`
+- 워크플로 미지정 시 모델명으로 자동 선택:
+  - `z_image`/`z-image` 포함 -> `yadam_api_z_image_turbo_placeholders.json`
+  - `flux` 포함 -> `yadam_api_flux_schnell_base_placeholders.json`
+  - 그 외 -> `yadam_api_sdxl_base_fast_placeholders.json`
+
 워크플로 템플릿:
 - `yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json`
 - `yadam/config/comfy_workflows/yadam_api_z_image_base_placeholders.json`

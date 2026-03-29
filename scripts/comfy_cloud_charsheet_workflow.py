@@ -10,6 +10,17 @@ from yadam.gen.comfy_client import ComfyUIImageClient
 from yadam.gen.image_client import ImageGenRequest
 
 
+def _default_workflow_for_model(root: Path, model_name: str, mode: str) -> Path:
+    model_l = str(model_name or "").strip().lower()
+    if ("z_image" in model_l) or ("z-image" in model_l):
+        return root / "yadam" / "config" / "comfy_workflows" / "yadam_api_z_image_turbo_placeholders.json"
+    if "flux" in model_l:
+        if mode == "refine":
+            return root / "yadam" / "config" / "comfy_workflows" / "yadam_api_flux_schnell_refine_img2img_placeholders.json"
+        return root / "yadam" / "config" / "comfy_workflows" / "yadam_api_flux_schnell_dualclip4_placeholders.json"
+    return root / "yadam" / "config" / "comfy_workflows" / "yadam_api_sdxl_base_fast_placeholders.json"
+
+
 def _load_project(project_path: Path) -> dict:
     return json.loads(project_path.read_text(encoding="utf-8"))
 
@@ -79,7 +90,7 @@ def run_base(
     if workflow_path.strip():
         workflow = Path(workflow_path).expanduser().resolve()
     else:
-        workflow = root / "yadam" / "config" / "comfy_workflows" / "yadam_api_flux_schnell_dualclip4_placeholders.json"
+        workflow = _default_workflow_for_model(root, model_name, "base")
     project_path = root / "work" / story_id / "out" / "project.json"
     out_dir = root / "work" / story_id / "characters" / f"candidates_{char_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +123,7 @@ def run_refine(
     if workflow_path.strip():
         workflow = Path(workflow_path).expanduser().resolve()
     else:
-        workflow = root / "yadam" / "config" / "comfy_workflows" / "yadam_api_flux_schnell_refine_img2img_placeholders.json"
+        workflow = _default_workflow_for_model(root, model_name, "refine")
     project_path = root / "work" / story_id / "out" / "project.json"
     out_path = root / "work" / story_id / "characters" / f"{char_id}_refined.jpg"
     if not reference_image.exists():
@@ -146,7 +157,7 @@ def main() -> None:
     ap.add_argument("--story-id", required=True)
     ap.add_argument("--char-id", required=True)
     ap.add_argument("--mode", choices=["base", "refine"], required=True)
-    ap.add_argument("--model", default="flux1-schnell.safetensors")
+    ap.add_argument("--model", default="z_image_turbo_bf16.safetensors")
     ap.add_argument("--seeds", default="10121,20231,30341,40451,50561,60671,70781,80891")
     ap.add_argument("--seed", type=int, default=917071)
     ap.add_argument("--reference-image", default="")
