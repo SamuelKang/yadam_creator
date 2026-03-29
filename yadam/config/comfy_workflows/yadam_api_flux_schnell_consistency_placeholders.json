@@ -1,0 +1,119 @@
+{
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "__MODEL__"
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": "__WIDTH__",
+      "height": "__HEIGHT__",
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Joseon dynasty Korean historical illustration, preserve identity and outfit continuity from reference image when available. __PROMPT__",
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "__NEGATIVE_PROMPT__, modern objects, western fireplace, text, subtitles, logo, watermark",
+      "clip": [
+        "4",
+        1
+      ]
+    }
+  },
+  "20": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__REF_IMAGE_1__"
+    }
+  },
+  "21": {
+    "class_type": "IPAdapterUnifiedLoader",
+    "inputs": {
+      "preset": "PLUS (high strength)"
+    }
+  },
+  "22": {
+    "class_type": "IPAdapterAdvanced",
+    "inputs": {
+      "weight": 0.75,
+      "weight_type": "linear",
+      "start_at": 0,
+      "end_at": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "ipadapter": [
+        "21",
+        0
+      ],
+      "image": [
+        "20",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "__SEED__",
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "22",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "YADAM_FLUX_CONSIST",
+      "images": [
+        "9",
+        0
+      ]
+    }
+  }
+}

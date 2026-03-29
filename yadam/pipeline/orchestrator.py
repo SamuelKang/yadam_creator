@@ -2027,11 +2027,12 @@ class Orchestrator:
                     ("inside the hut", "inside a Joseon room with ondol floor and oil-lamp lighting"),
                     ("Inside the hut", "Inside a Joseon room with ondol floor and oil-lamp lighting"),
                     ("hut door", "wooden sliding door of a Joseon room"),
-                    ("hut", "Joseon room with ondol floor"),
                 ]
                 out = ptxt
                 for src, dst in replacements:
                     out = out.replace(src, dst)
+                # Word-boundary only: avoid corrupting unrelated words like "shuts".
+                out = re.sub(r"\bhut\b", "Joseon room with ondol floor", out, flags=re.IGNORECASE)
                 return out
 
             def _sanitize_clip_prompt_text(prompt_text: str) -> str:

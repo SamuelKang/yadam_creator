@@ -16,3 +16,6 @@ story*.title
 
 # OS
 .DS_Store
+
+# Local secrets
+.comfyui.env

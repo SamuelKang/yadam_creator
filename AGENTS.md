@@ -75,3 +75,13 @@
 - 사용자가 커밋을 요청한 경우, 특별히 중단 지시가 없는 한 **커밋 직후 같은 턴에서 push까지 연속 수행**한다.
 - push 대상은 기본적으로 `origin/main`이며, 실패 시 원인(권한/네트워크/충돌)을 즉시 보고하고 다음 조치를 제안한다.
 - 런타임 산출물(`stories/`, `work/`)은 사용자가 명시적으로 원하지 않는 한 커밋/푸시 대상에서 제외한다.
+
+## 9) 로컬 Comfy Cloud 키 위치
+- Comfy Cloud API 키는 저장소 루트의 `.comfyui.env`에 저장되어 있다.
+- 다음 세션에서 Comfy Cloud 작업을 시작할 때 먼저 이 파일을 로드한다.
+  - 예: `set -a; source .comfyui.env; set +a`
+- `.comfyui.env`는 로컬 비밀 파일이며 git commit/push 대상에서 제외한다.
+
+## 10) Z-Image Turbo 운영 메모 위치
+- Comfy Cloud + Z-Image Turbo 인물 출력 노하우는 `docs/comfy_cloud_playbook.md`의 `11) Z-Image Turbo 인물 출력 노하우 (실전)` 섹션을 기준으로 따른다.
+- 다음 세션에서 어떤 `story-id` 작업을 재개하더라도 위 섹션의 모델 조합/프롬프트 규칙/실패 대응을 먼저 확인한다.
