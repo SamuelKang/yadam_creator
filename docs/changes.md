@@ -32,6 +32,35 @@
 
 변경 이력
 
+[2026-03-29] Comfy Cloud 기본 경로를 Z-Image Turbo 중심으로 정리 + place 비실사 운영 규칙 코드화
+
+- 목적
+	- Comfy Cloud 운용 시 모델/워크플로 선택을 세션마다 수동으로 맞추던 부담을 줄이고, place 이미지에서 반복되던 실사/현대물(전봇대·전선) 혼입을 기본 규칙으로 차단하기 위함.
+- 변경
+	- `yadam/model_defaults.py`
+		- comfy 기본 모델을 `z_image_turbo_bf16.safetensors`로 변경.
+		- Z-Image Turbo 기본 워크플로 상수 추가.
+	- `yadam/cli.py`
+		- comfy 기본 워크플로 선택 로직에 `z_image|z-image` 분기 추가.
+		- `--comfy-api-key-header` 기본값을 `X-API-Key`로 변경.
+		- 예시 명령의 comfy 모델을 Z-Image Turbo 기준으로 갱신.
+	- `yadam/gen/comfy_client.py`
+		- 기본 모델/기본 인증 헤더를 Z-Image Turbo + `X-API-Key` 기준으로 정렬.
+	- `skills/make_vrew/scripts/run_through_place_refs.sh`
+		- `COMFYUI_API_KEY`가 있으면 Comfy Cloud + Z-Image Turbo로 7/8단계를 실행.
+		- 키가 없으면 `gemini_flash_image`로 자동 폴백.
+	- `scripts/comfy_cloud_place_refs_workflow.py` (신규)
+		- story 공통 place 재생성 스크립트 추가.
+		- 비실사 스타일 프리픽스 + 현대물/텍스트/실사 드리프트 네거티브를 기본 내장.
+	- 문서 업데이트:
+		- `skills/make_vrew/SKILL.md`
+		- `skills/make_vrew/references/place_ref_review.md`
+		- `docs/comfy_cloud_playbook.md`
+		- `docs/cli_usage.md`
+		- `docs/requirements.md`
+- 영향
+	- Comfy Cloud 기반 레퍼런스 생성 기본 경로(특히 place 단계)의 재현성과 품질 일관성 개선.
+
 [2026-03-23] 역할형 인물 라벨(adopted/true daughter 등) A/B 시각 앵커 자동 잠금
 
 - 목적
@@ -1212,3 +1241,31 @@
 		- `111`: `EMPTY_IMAGE_BYTES`는 긴 액션 prompt보다 더 짧고 단순한 “burning prison entrance + one boy runs into flames toward trapped guard” 식 prompt로 낮추자 복구됐다.
 - 이유
 	- 이번 `story27` 보정에서 문제의 대부분이 모델 자체보다 prompt 앵커 부족, exact cast 미고정, 상태 전환 YAML 누락, scene 동작 해석 오류에서 나왔기 때문.
+
+[2026-03-28] ComfyUI Cloud + FLUX schnell 템플릿/참조 주입 경로 정리
+
+- 목적
+	- ComfyUI Cloud에서 FLUX schnell 기반으로 조선시대 야담 이미지를 생성할 때, 기존 scene reference(인물/장소) 일관성을 그대로 활용할 수 있게 하기 위함.
+- 변경
+	- `yadam/gen/comfy_client.py`
+		- Comfy API 인증 헤더 지원(`api_key`, `api_key_header`) 추가.
+		- scene reference 이미지가 있으면 `/upload/image`로 업로드 후 workflow placeholder로 주입하도록 확장.
+		- workflow placeholder 확장:
+			- `__ASPECT_RATIO__`
+			- `__REF_IMAGE_COUNT__`
+			- `__REF_IMAGE_1__`~`__REF_IMAGE_4__`
+	- `yadam/cli.py`
+		- `--comfy-api-key`, `--comfy-api-key-header` 옵션 추가.
+		- comfy 기본 workflow 선택을 모델명 기반으로 분기:
+			- `flux` 포함 모델 -> `yadam_api_flux_schnell_base_placeholders.json`
+			- 그 외 -> 기존 SDXL fast 템플릿
+	- `yadam/model_defaults.py`
+		- Comfy workflow 기본 파일명 상수 추가.
+	- `yadam/config/comfy_workflows/`
+		- `yadam_api_flux_schnell_base_placeholders.json` 추가.
+		- `yadam_api_flux_schnell_consistency_placeholders.json` 추가(IP-Adapter 노드 기반 템플릿).
+		- `yadam_api_flux_schnell_fallback_placeholders.json` 추가.
+	- 문서
+		- `docs/requirements.md`, `docs/cli_usage.md`에 Cloud 인증/placeholder/템플릿 경로 업데이트.
+- 이유
+	- 기존 comfy 경로는 workflow placeholder와 인증/참조 업로드가 제한적이어서, Cloud 환경에서 scene reference를 직접 반영하기 어려웠기 때문.

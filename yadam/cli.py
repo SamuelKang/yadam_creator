@@ -14,6 +14,9 @@ from pathlib import Path
 
 from yadam.model_defaults import (
     DEFAULT_COMFY_MODEL,
+    DEFAULT_COMFY_WORKFLOW_FLUX_BASE,
+    DEFAULT_COMFY_WORKFLOW_SDXL_FAST,
+    DEFAULT_COMFY_WORKFLOW_ZIMAGE_TURBO,
     DEFAULT_GEMINI_IMAGE_MODEL,
     DEFAULT_TEXT_LLM_MODEL,
     DEFAULT_VERTEX_IMAGE_MODEL,
@@ -448,8 +451,8 @@ EXAMPLES_TEXT = "\n".join([
     "",
     "추가 예시:",
     "  python -m yadam.cli --story-id story00 --image-api gemini_flash_image",
+    "  python -m yadam.cli --story-id story00 --image-api comfyui --image-model z_image_turbo_bf16.safetensors",
     "  python -m yadam.cli --story-id story00 --image-api comfyui --comfy-workflow ~/comfy/flux_api.json",
-    "  python -m yadam.cli --story-id story00 --image-api comfyui --image-model sd_xl_base_1.0.safetensors",
     "  python -m yadam.cli --story-id story00 --vrew-clip-max-chars 40",
 ])
 
@@ -465,6 +468,17 @@ class FriendlyArgumentParser(argparse.ArgumentParser):
             f"  python -m yadam.cli --story-id story00 --non-interactive\n\n"
             f"전체 도움말: python -m yadam.cli --help\n",
         )
+
+
+def _default_comfy_workflow_for_model(root: Path, model: str) -> Path:
+    model_l = (model or "").strip().lower()
+    if ("z_image" in model_l) or ("z-image" in model_l):
+        name = DEFAULT_COMFY_WORKFLOW_ZIMAGE_TURBO
+    elif "flux" in model_l:
+        name = DEFAULT_COMFY_WORKFLOW_FLUX_BASE
+    else:
+        name = DEFAULT_COMFY_WORKFLOW_SDXL_FAST
+    return root / "yadam" / "config" / "comfy_workflows" / name
 
 
 def main() -> None:
@@ -568,6 +582,16 @@ def main() -> None:
         "--comfy-workflow",
         default="",
         help="ComfyUI API workflow JSON 경로(미지정 시 프로젝트 기본 템플릿 사용, placeholder 지원)",
+    )
+    ap.add_argument(
+        "--comfy-api-key",
+        default="",
+        help="ComfyUI Cloud API 키(미지정 시 COMFYUI_API_KEY 환경변수 사용)",
+    )
+    ap.add_argument(
+        "--comfy-api-key-header",
+        default="X-API-Key",
+        help="ComfyUI API 키 헤더명(기본: X-API-Key)",
     )
     ap.add_argument(
         "--comfy-timeout-sec",
@@ -958,9 +982,7 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
         workflow_path = ""
     else:
         model = args.image_model.strip() or DEFAULT_COMFY_MODEL
-        default_comfy_workflow = (
-            root / "yadam" / "config" / "comfy_workflows" / "yadam_api_sdxl_base_fast_placeholders.json"
-        )
+        default_comfy_workflow = _default_comfy_workflow_for_model(root, model)
         workflow_path = (
             args.comfy_workflow.strip()
             or os.getenv("COMFYUI_WORKFLOW_PATH", "").strip()
@@ -978,6 +1000,8 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
             workflow_path=workflow_path,
             model=model,
             timeout_sec=max(10, int(args.comfy_timeout_sec)),
+            api_key=args.comfy_api_key.strip() or os.getenv("COMFYUI_API_KEY", "").strip(),
+            api_key_header=args.comfy_api_key_header.strip(),
         )
 
     print(f"[INFO] starting image and .vrew pipeline for {story_id}")

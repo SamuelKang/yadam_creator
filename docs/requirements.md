@@ -179,12 +179,18 @@ LLM 호출 진행상황 표시(heartbeat)
 	•	기본값:
 	•	vertex_imagen -> imagen-4.0-generate-001
 	•	gemini_flash_image -> gemini-2.5-flash-image
-	•	comfyui -> sd_xl_base_1.0.safetensors
+	•	comfyui -> z_image_turbo_bf16.safetensors
 	•	comfyui 사용 시:
 	•	--comfy-url 로 서버 주소를 지정할 수 있어야 한다(기본 http://127.0.0.1:8188).
+	•	--comfy-api-key / COMFYUI_API_KEY 로 Cloud 인증 토큰을 전달할 수 있어야 한다.
+	•	--comfy-api-key-header 로 인증 헤더명을 바꿀 수 있어야 한다(기본 X-API-Key).
 	•	--comfy-workflow 또는 COMFYUI_WORKFLOW_PATH 로 API workflow JSON 경로를 지정할 수 있다.
-	•	둘 다 미지정이면 프로젝트 기본 템플릿(yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json)을 사용한다.
-	•	workflow JSON은 __PROMPT__/__NEGATIVE_PROMPT__/__WIDTH__/__HEIGHT__/__SEED__/__MODEL__ placeholder 치환을 지원해야 한다.
+	•	둘 다 미지정이면 모델명에 따라 기본 템플릿을 자동 선택한다.
+	•	모델명에 `z_image` 또는 `z-image`가 포함되면 `yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json`.
+	•	모델명에 `flux`가 포함되면 `yadam/config/comfy_workflows/yadam_api_flux_schnell_base_placeholders.json`.
+	•	그 외 모델은 `yadam/config/comfy_workflows/yadam_api_sdxl_base_fast_placeholders.json`.
+	•	workflow JSON은 __PROMPT__/__NEGATIVE_PROMPT__/__WIDTH__/__HEIGHT__/__SEED__/__MODEL__/__ASPECT_RATIO__/__REF_IMAGE_COUNT__/__REF_IMAGE_1__..__REF_IMAGE_4__ 치환을 지원해야 한다.
+	•	scene 참조 이미지가 있으면 /upload/image 업로드 후 __REF_IMAGE_N__에 파일명을 주입해야 한다.
 	•	운영 권장:
 	•	실전 품질 일관성 기준의 기본 경로는 vertex_imagen으로 둔다.
 	•	comfyui는 속도/비용/로컬 실행 실험용 보조 경로로 운용한다.

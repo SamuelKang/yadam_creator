@@ -124,6 +124,12 @@ python skills/make_vrew/scripts/check_structure_ready.py --story-id <story-id>
 skills/make_vrew/scripts/run_through_place_refs.sh <story-id>
 ```
 
+`run_through_place_refs.sh` default behavior:
+
+- if `COMFYUI_API_KEY` exists: use Comfy Cloud + `z_image_turbo_bf16.safetensors`
+- default workflow: `yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json`
+- if key is missing: fallback to `gemini_flash_image`
+
 This must stop after step 8. It must not continue into clip generation or export.
 
 ## Character Reference Review Stage
@@ -170,6 +176,12 @@ If any issue is found:
 - rerun the place review before continuing
 
 Only continue to step 9 when place references are visually consistent and semantically correct.
+
+When using Comfy Cloud + Z-Image Turbo for place refs, treat these as hard checks:
+
+- avoid photoreal drift; keep illustration/matte-painting tone
+- remove modern artifacts (utility pole, power line, traffic sign, cars)
+- remove visible text/hanja signage unless the story explicitly needs it
 
 ## Step 9 Prompt Review Stage
 

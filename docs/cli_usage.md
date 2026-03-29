@@ -134,9 +134,32 @@ python -m yadam.cli --story-id story13 --image-api vertex_imagen
 python -m yadam.cli \
   --story-id story13 \
   --image-api comfyui \
-  --comfy-url http://127.0.0.1:8188 \
-  --comfy-workflow /path/to/workflow.json
+  --image-model z_image_turbo_bf16.safetensors \
+  --comfy-url http://127.0.0.1:8188
 ```
+
+ComfyUI Cloud 예시:
+
+```bash
+python -m yadam.cli \
+  --story-id story13 \
+  --image-api comfyui \
+  --image-model z_image_turbo_bf16.safetensors \
+  --comfy-url https://cloud.comfy.org/api \
+  --comfy-api-key \"$COMFYUI_API_KEY\" \
+  --comfy-api-key-header X-API-Key \
+  --comfy-workflow yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json
+```
+
+워크플로 템플릿:
+- `yadam/config/comfy_workflows/yadam_api_z_image_turbo_placeholders.json`
+- `yadam/config/comfy_workflows/yadam_api_z_image_base_placeholders.json`
+- `yadam/config/comfy_workflows/yadam_api_flux_schnell_base_placeholders.json`
+- `yadam/config/comfy_workflows/yadam_api_flux_schnell_consistency_placeholders.json`
+- `yadam/config/comfy_workflows/yadam_api_flux_schnell_fallback_placeholders.json`
+
+운영 노하우/장애 대응/모델 선별 기준:
+- `docs/comfy_cloud_playbook.md`
 
 ## 7. 자주 쓰는 실행 예시
 
