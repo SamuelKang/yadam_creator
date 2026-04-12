@@ -25,7 +25,8 @@
 - 새 세션 시작 시, 전역 스킬 목록만 믿지 말고 이 저장소의 로컬 스킬 존재를 직접 확인한다.
   - 우선 확인 대상: `skills/make_vrew/SKILL.md`
   - 구조/룰만 다루는 작업이면 `skills/yadam-structure-rules/SKILL.md`도 함께 확인한다.
-  - 사용자가 `story-id` 기반 이미지/clip/`.vrew` 작업을 요청하면, 가능하면 먼저 `make_vrew` 로컬 스킬 기준으로 진행한다.
+  - 사용자가 `story-id` 기반 **프롬프트 QC/역할 검수/Flow 재생성 검증**을 요청하면 `skills/prompt_qc_flow/SKILL.md`를 기본 역할로 우선 적용한다.
+  - 사용자가 `story-id` 기반 이미지/clip/`.vrew` end-to-end 실행을 요청하면 `make_vrew` 로컬 스킬 기준으로 진행한다.
 
 ## 4) 이 프로젝트에서 특히 지킬 사항
 - `llm_scene_prompt.py`:
@@ -34,6 +35,8 @@
   - 조선 고증 규칙 유지(실내 서양식 fireplace 금지, 한국형 `ㄱ`자 낫 같은 생활 소도구 실루엣 유지 등)
   - clip image용 `llm_clip_prompt`의 최종 작성 책임은 Codex에 있다.
   - LLM extract 결과는 초안으로만 취급하고, 비어 있거나 품질 미달이면 Codex가 `project.json`에서 직접 생성/보정 후 다음 단계로 진행한다.
+  - 기본 정책: 구조 단계 remote LLM extract는 비활성화하고 Codex가 직접 병합/보정한다.
+  - 텍스트 LLM 기본 모델은 `gemini-2.0-flash`를 사용한다(`gemini-3-flash-preview` 비사용).
 - 인물 일관성:
   - 실명 canonical + 역할명 alias
   - 성장 서사는 분리 캐릭터 대신 variants 우선
@@ -85,3 +88,11 @@
 ## 10) Z-Image Turbo 운영 메모 위치
 - Comfy Cloud + Z-Image Turbo 인물 출력 노하우는 `docs/comfy_cloud_playbook.md`의 `11) Z-Image Turbo 인물 출력 노하우 (실전)` 섹션을 기준으로 따른다.
 - 다음 세션에서 어떤 `story-id` 작업을 재개하더라도 위 섹션의 모델 조합/프롬프트 규칙/실패 대응을 먼저 확인한다.
+
+## 11) 브라우저 Flow 운영 고정 규칙 (story16 교훈)
+- `count` 단독 증감으로 완료 판정하지 않는다. 최종 판단은 **카드 프롬프트 대조**를 우선한다.
+- 저장 전 반드시 `... -> 프롬프트 재사용`으로 현재 카드 프롬프트를 확인하고, `scene` 프롬프트와 일치할 때만 저장한다.
+- `"프롬프트를 입력해야 합니다"` 경고가 떠도 자동 재입력-재생성 루프를 돌리지 않는다.
+  - 해당 scene은 `manual_check`로 멈추고 수동 검증 후 재개한다.
+- Flow 상태 조회/자동화는 반드시 `/tools/flow` 탭을 기준으로 한다 (`gemini.google.com/app` 탭 혼입 금지).
+- 원본 저장은 재생성보다 **이미 생성된 카드 재활용**을 우선한다.

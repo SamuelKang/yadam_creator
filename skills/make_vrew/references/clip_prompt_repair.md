@@ -15,7 +15,9 @@ Before step 9, Codex should repair weak scene structure instead of merely stoppi
 For each flagged scene in `work/<story-id>/out/project.json`:
 
 1. Add or correct `scene.places`
-2. Rewrite `scene.llm_clip_prompt`
+2. Add or correct `scene.characters` and `scene.character_instances` when scene cast is wrong
+3. Rewrite `scene.llm_clip_prompt`
+4. Rewrite `scene.image.prompt_used` for Flow/browser generation paths
 
 ## Place Repair Rules
 
@@ -72,6 +74,47 @@ For each flagged scene in `work/<story-id>/out/project.json`:
   - specify whether the scene is still before treatment/relief or after it
   - specify whether a character has already switched from shaman/disguise/travel clothing into recovered noble attire or another post-event wardrobe
   - specify when a prop may contain natural in-world writing, but never ask for comic-style overlaid text, speech bubbles, or sound effects
+
+## Flow Prompt Repair Rules (`scene.image.prompt_used`)
+
+- Write for a short video clip, not a still-image caption.
+- Use this fixed order:
+  - shot/camera
+  - main subjects
+  - visible action
+  - environment
+  - time/lighting
+  - wardrobe/prop continuity
+  - style/mood
+  - negative constraints
+- Keep each `prompt_used` within 70-140 words.
+- Keep style lines short so action/environment remains dominant.
+- Keep negative constraints compact and reusable.
+- Preserve `scene.image.prompt_original`; only replace `prompt_used`.
+
+### Anti-template conversion
+
+- Remove boilerplate lines that can fit any scene.
+- Rewrite abstract labels into drawable movement and blocking.
+  - bad: `tense body language`
+  - good: `he turns sideways to block the gate and raises one arm`
+
+### Scene-text grounding
+
+- Every repaired prompt must be traceable to `scene.text`.
+- Do not inject non-script events (extra battles, random fire/smoke, extra crowds, unrelated animals).
+- If the scene beat is mostly static, use minimal visible motion (breath, wind, gaze shift) instead of artificial action.
+
+### Mis-tag drift guards
+
+- Prefer explicit location cues (`마당/대문/우물/안채/관아/협곡`) over broad mood words.
+- Avoid one-keyword auto-mapping when full sentence meaning disagrees.
+- Before finalizing, cross-check:
+  - `scene.text`
+  - `scene.characters`
+  - `scene.places`
+  - `llm_clip_prompt`
+  - `image.prompt_used`
 
 ## Good Repair Pattern
 

@@ -86,32 +86,26 @@ class VrewFileExporter(VrewExporter):
             "emotion": voice_emotion,
         }
         character_alias_map = self._build_character_alias_map(req.project)
-        dialogue_target_name = str(os.getenv("VREW_DIALOGUE_TARGET_CHARACTER", "윤") or "윤").strip()
-        yun_char_id = self._find_character_id_by_token(req.project, dialogue_target_name) or self._find_yun_char_id(req.project)
-        dialogue_target_tokens = self._collect_character_tokens(req.project, yun_char_id)
-        yun_dialogue_voice_profile = self._resolve_yun_dialogue_voice_profile(
+        dialogue_voice_rules = self._build_character_dialogue_voice_rules(
+            project=req.project,
             out_dir=Path(req.out_dir),
             story_name=story_name,
             narrator_voice_profile=narrator_voice_profile,
         )
-        manual_yun_dialogue_keys = self._load_manual_dialogue_keys_for_story(
+        voice_profile_by_char_id: Dict[str, Dict[str, Any]] = {}
+        for r in (dialogue_voice_rules or []):
+            cid = str(r.get("char_id") or "").strip()
+            vp = r.get("voice_profile") if isinstance(r.get("voice_profile"), dict) else None
+            if cid and vp:
+                voice_profile_by_char_id[cid] = vp
+        manual_dialogue_char_map = self._load_manual_dialogue_char_map_for_story(
+            project=req.project,
             story_name=story_name,
-            target_tokens=dialogue_target_tokens,
         )
-        yeonhui_char_id = self._find_character_id_by_token(req.project, "연희")
-        yeonhui_tokens = self._collect_character_tokens(req.project, yeonhui_char_id)
-        yeonhui_dialogue_voice_profile = self._resolve_named_dialogue_voice_profile(
-            out_dir=Path(req.out_dir),
-            story_name=story_name,
-            narrator_voice_profile=narrator_voice_profile,
-            template_env_var="VREW_YEONHUI_DIALOGUE_TEMPLATE_PATH",
-            default_template_name="reference_소녀_레다_목소리.vrew",
-            fallback_out_suffix="_yeonhui_dialogue.vrew",
-        )
-        manual_yeonhui_dialogue_keys = self._load_manual_dialogue_keys_for_story(
-            story_name=story_name,
-            target_tokens=yeonhui_tokens,
-        )
+        self._manual_voice_profile_by_char_id = dict(voice_profile_by_char_id)
+        self._manual_dialogue_char_map = {
+            k: cid for k, cid in manual_dialogue_char_map.items() if cid in self._manual_voice_profile_by_char_id
+        }
 
         files: List[Dict[str, Any]] = []
         assets: Dict[str, Any] = {}
@@ -141,13 +135,8 @@ class VrewFileExporter(VrewExporter):
                 clips=clips,
                 zip_media=zip_media,
                 character_alias_map=character_alias_map,
-                dialogue_char_id=yun_char_id,
-                dialogue_voice_profile=yun_dialogue_voice_profile,
                 narrator_voice_profile=narrator_voice_profile,
-                manual_dialogue_keys=manual_yun_dialogue_keys,
-                secondary_dialogue_char_id=yeonhui_char_id,
-                secondary_dialogue_voice_profile=yeonhui_dialogue_voice_profile,
-                secondary_manual_dialogue_keys=manual_yeonhui_dialogue_keys,
+                dialogue_voice_rules=dialogue_voice_rules,
             )
             out_path = Path(req.out_dir) / f"{story_name}.vrew"
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,26 +152,31 @@ class VrewFileExporter(VrewExporter):
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
             text = str(scene.get("text") or "").strip()
+            scene_char_ids = [str(x) for x in (scene.get("characters") or []) if str(x)]
             prev_text = str((scenes[zindex - 1].get("text") if zindex > 0 else "") or "")
             next_text = str((scenes[zindex + 1].get("text") if zindex + 1 < len(scenes) else "") or "")
-            target_dialogues = self._extract_dialogue_fragments_for_char(
-                text=text,
-                target_char_id=yun_char_id,
-                character_alias_map=character_alias_map,
-                prev_text=prev_text,
-                next_text=next_text,
-            )
-            if manual_yun_dialogue_keys:
-                target_dialogues = list(dict.fromkeys(target_dialogues + manual_yun_dialogue_keys))
-            secondary_target_dialogues = self._extract_dialogue_fragments_for_char(
-                text=text,
-                target_char_id=yeonhui_char_id,
-                character_alias_map=character_alias_map,
-                prev_text=prev_text,
-                next_text=next_text,
-            )
-            if manual_yeonhui_dialogue_keys:
-                secondary_target_dialogues = list(dict.fromkeys(secondary_target_dialogues + manual_yeonhui_dialogue_keys))
+            rules_for_scene: List[Tuple[List[str], Optional[Dict[str, Any]]]] = []
+            for r in dialogue_voice_rules:
+                cid = str(r.get("char_id") or "").strip()
+                if not cid:
+                    continue
+                target_dialogues = self._extract_dialogue_fragments_for_char(
+                    text=text,
+                    target_char_id=cid,
+                    character_alias_map=character_alias_map,
+                    active_char_ids=scene_char_ids,
+                    prev_text=prev_text,
+                    next_text=next_text,
+                )
+                manual_keys = r.get("manual_dialogue_keys") if isinstance(r.get("manual_dialogue_keys"), list) else []
+                if manual_keys:
+                    target_dialogues = list(dict.fromkeys(target_dialogues + [str(x) for x in manual_keys if str(x).strip()]))
+                rules_for_scene.append((target_dialogues, r.get("voice_profile") if isinstance(r.get("voice_profile"), dict) else None))
+            scene_fallback_voice: Optional[Dict[str, Any]] = None
+            img_meta = scene.get("image") if isinstance(scene.get("image"), dict) else {}
+            subject_char_id = str(img_meta.get("subject_char_id") or "").strip()
+            if subject_char_id and subject_char_id in voice_profile_by_char_id:
+                scene_fallback_voice = voice_profile_by_char_id[subject_char_id]
             text_chunks = self._split_for_clips(
                 text,
                 clip_text_max_chars,
@@ -243,11 +237,14 @@ class VrewFileExporter(VrewExporter):
                 voice_profile = self._resolve_voice_profile_for_chunk_multi(
                     chunk_text=chunk_text,
                     narrator_voice_profile=narrator_voice_profile,
-                    rules=[
-                        (target_dialogues, yun_dialogue_voice_profile),
-                        (secondary_target_dialogues, yeonhui_dialogue_voice_profile),
-                    ],
+                    rules=rules_for_scene,
                 )
+                if (
+                    scene_fallback_voice is not None
+                    and '"' in str(chunk_text or "")
+                    and self._is_same_voice_profile(voice_profile, narrator_voice_profile)
+                ):
+                    voice_profile = scene_fallback_voice
                 chunk_speaker = dict(voice_profile["speaker"])
                 chunk_volume = float(voice_profile["volume"])
                 chunk_speed = float(voice_profile["speed"])
@@ -490,6 +487,153 @@ class VrewFileExporter(VrewExporter):
             return profile
         return None
 
+    def _build_character_dialogue_voice_rules(
+        self,
+        *,
+        project: Dict[str, Any],
+        out_dir: Path,
+        story_name: str,
+        narrator_voice_profile: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        # 1) story-specific map file (stories/<story>_voice_map.json) first
+        # 2) fallback to legacy 2-target flow if map is missing
+        rules: List[Dict[str, Any]] = []
+        voice_map = self._load_story_voice_map(story_name=story_name)
+        if voice_map:
+            for c in (project.get("characters") or []):
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("id") or "").strip()
+                if not cid:
+                    continue
+                tokens = [str(c.get("name") or "").strip()]
+                tokens.extend(str(a).strip() for a in (c.get("aliases") or []) if str(a).strip())
+
+                matched_spec: Optional[Dict[str, Any]] = None
+                for tok in tokens:
+                    if tok and tok in voice_map and isinstance(voice_map[tok], dict):
+                        matched_spec = voice_map[tok]
+                        break
+                if matched_spec is None and cid in voice_map and isinstance(voice_map[cid], dict):
+                    matched_spec = voice_map[cid]
+                if matched_spec is None:
+                    continue
+
+                profile = self._voice_profile_from_spec(
+                    spec=matched_spec,
+                    out_dir=out_dir,
+                    narrator_voice_profile=narrator_voice_profile,
+                )
+                if profile is None:
+                    continue
+
+                manual_keys = self._load_manual_dialogue_keys_for_story(
+                    story_name=story_name,
+                    target_tokens=tokens,
+                )
+                rules.append({
+                    "char_id": cid,
+                    "voice_profile": profile,
+                    "manual_dialogue_keys": manual_keys,
+                })
+            if rules:
+                return rules
+
+        # fallback: preserve existing behavior for old stories
+        dialogue_target_name = str(os.getenv("VREW_DIALOGUE_TARGET_CHARACTER", "윤") or "윤").strip()
+        yun_char_id = self._find_character_id_by_token(project, dialogue_target_name) or self._find_yun_char_id(project)
+        dialogue_target_tokens = self._collect_character_tokens(project, yun_char_id)
+        yun_dialogue_voice_profile = self._resolve_yun_dialogue_voice_profile(
+            out_dir=out_dir,
+            story_name=story_name,
+            narrator_voice_profile=narrator_voice_profile,
+        )
+        manual_yun_dialogue_keys = self._load_manual_dialogue_keys_for_story(
+            story_name=story_name,
+            target_tokens=dialogue_target_tokens,
+        )
+        if yun_char_id and yun_dialogue_voice_profile:
+            rules.append({
+                "char_id": yun_char_id,
+                "voice_profile": yun_dialogue_voice_profile,
+                "manual_dialogue_keys": manual_yun_dialogue_keys,
+            })
+
+        yeonhui_char_id = self._find_character_id_by_token(project, "연희")
+        yeonhui_tokens = self._collect_character_tokens(project, yeonhui_char_id)
+        yeonhui_dialogue_voice_profile = self._resolve_named_dialogue_voice_profile(
+            out_dir=out_dir,
+            story_name=story_name,
+            narrator_voice_profile=narrator_voice_profile,
+            template_env_var="VREW_YEONHUI_DIALOGUE_TEMPLATE_PATH",
+            default_template_name="reference_소녀_레다_목소리.vrew",
+            fallback_out_suffix="_yeonhui_dialogue.vrew",
+        )
+        manual_yeonhui_dialogue_keys = self._load_manual_dialogue_keys_for_story(
+            story_name=story_name,
+            target_tokens=yeonhui_tokens,
+        )
+        if yeonhui_char_id and yeonhui_dialogue_voice_profile:
+            rules.append({
+                "char_id": yeonhui_char_id,
+                "voice_profile": yeonhui_dialogue_voice_profile,
+                "manual_dialogue_keys": manual_yeonhui_dialogue_keys,
+            })
+        return rules
+
+    def _load_story_voice_map(self, *, story_name: str) -> Dict[str, Any]:
+        repo_root = Path(__file__).resolve().parents[2]
+        p = repo_root / "stories" / f"{story_name}_voice_map.json"
+        if not p.exists():
+            return {}
+        try:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    def _voice_profile_from_spec(
+        self,
+        *,
+        spec: Dict[str, Any],
+        out_dir: Path,
+        narrator_voice_profile: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        repo_root = Path(__file__).resolve().parents[2]
+        base = {
+            "speaker": dict(narrator_voice_profile.get("speaker") or {}),
+            "volume": float(narrator_voice_profile.get("volume", 0)),
+            "speed": float(narrator_voice_profile.get("speed", 0)),
+            "pitch": float(narrator_voice_profile.get("pitch", -1)),
+            "emotion": str(narrator_voice_profile.get("emotion") or "neutral"),
+        }
+
+        template_path = str(spec.get("template") or "").strip()
+        if template_path:
+            tp = Path(template_path).expanduser()
+            if not tp.is_absolute():
+                tp = repo_root / template_path
+            if not tp.exists():
+                tp2 = out_dir / template_path
+                if tp2.exists():
+                    tp = tp2
+            template = self._load_preset_from_vrew(tp)
+            if isinstance(template, dict):
+                if isinstance(template.get("speaker"), dict):
+                    base["speaker"] = dict(template["speaker"])
+                for k in ("volume", "speed", "pitch", "emotion"):
+                    if template.get(k) is not None:
+                        base[k] = template[k]
+
+        if isinstance(spec.get("speaker"), dict):
+            merged = dict(base.get("speaker") or {})
+            merged.update({k: v for k, v in spec["speaker"].items() if v is not None})
+            base["speaker"] = merged
+        for k in ("volume", "speed", "pitch", "emotion"):
+            if spec.get(k) is not None:
+                base[k] = spec[k]
+        return base
+
     def _load_manual_dialogue_keys_for_story(
         self,
         *,
@@ -534,6 +678,41 @@ class VrewFileExporter(VrewExporter):
                 return []
         return list(dict.fromkeys(out))
 
+    def _load_manual_dialogue_char_map_for_story(
+        self,
+        *,
+        project: Dict[str, Any],
+        story_name: str,
+    ) -> Dict[str, str]:
+        repo_root = Path(__file__).resolve().parents[2]
+        generic_path = repo_root / "stories" / f"{story_name}_dialogue_overrides.txt"
+        if not generic_path.exists():
+            return {}
+        out: Dict[str, str] = {}
+        try:
+            for raw in generic_path.read_text(encoding="utf-8").splitlines():
+                line = str(raw or "").strip()
+                if not line or line.startswith("#"):
+                    continue
+                char_label = ""
+                dialogue = line
+                if "\t" in line:
+                    char_label, dialogue = line.split("\t", 1)
+                elif "|" in line:
+                    char_label, dialogue = line.split("|", 1)
+                label = str(char_label or "").strip()
+                if not label:
+                    continue
+                cid = self._find_character_id_by_token(project, label)
+                if not cid:
+                    continue
+                k = self._dialogue_key(dialogue)
+                if k:
+                    out[k] = cid
+        except Exception:
+            return {}
+        return out
+
     def _find_character_id_by_token(self, project: Dict[str, Any], token: str) -> Optional[str]:
         t = str(token or "").strip()
         if not t:
@@ -574,7 +753,15 @@ class VrewFileExporter(VrewExporter):
                 continue
             tokens = [str(c.get("name") or "").strip()]
             tokens.extend(str(a).strip() for a in (c.get("aliases") or []) if str(a).strip())
+            expanded: List[str] = []
             for tok in tokens:
+                if tok:
+                    expanded.append(tok)
+                    parts = [p for p in re.split(r"\s+", tok) if p]
+                    expanded.extend(parts)
+                    if "장수" in tok and "장수" not in expanded:
+                        expanded.append("장수")
+            for tok in expanded:
                 if tok:
                     out[tok.lower()] = cid
         return out
@@ -599,6 +786,7 @@ class VrewFileExporter(VrewExporter):
         text: str,
         target_char_id: Optional[str],
         character_alias_map: Dict[str, str],
+        active_char_ids: Optional[List[str]] = None,
         prev_text: str = "",
         next_text: str = "",
     ) -> List[str]:
@@ -608,13 +796,34 @@ class VrewFileExporter(VrewExporter):
         if not src:
             return []
         out: List[str] = []
+        target_tokens = [tok for tok, cid in character_alias_map.items() if str(cid) == str(target_char_id) and tok]
         for m in re.finditer(r'"([^"\n]+)"', src):
             quoted = str(m.group(1) or "").strip()
             if not quoted:
                 continue
-            # Addressing the target by name (e.g., "윤아, ...") is usually
-            # another speaker talking to the target, not target speech.
-            if re.match(r"^윤아(?:\s|,|!|\?|$)", quoted):
+            # If a quote starts by calling the target directly ("판수 영감,", "수련아"),
+            # treat it as someone else addressing the target, not target speech.
+            q_low = quoted.lower()
+            addressed_target = False
+            for tok in target_tokens:
+                tok_re = re.escape(str(tok))
+                if re.match(
+                    rf"^\s*{tok_re}(?:\s*(?:아|야|님|영감|씨|나리|도련님))?(?:\s|,|!|\?|$)",
+                    q_low,
+                    re.IGNORECASE,
+                ):
+                    addressed_target = True
+                    break
+                # Vocative lead + target mention:
+                # e.g. "여보게, 판수 영감! ...", "이보게 판수 ...".
+                if re.search(
+                    rf"^\s*(?:여보게|이보게|자네|여봐라|거기)\s*[,! ]+\s*{tok_re}(?:\s*(?:님|영감|씨|나리|도련님))?",
+                    q_low,
+                    re.IGNORECASE,
+                ):
+                    addressed_target = True
+                    break
+            if addressed_target:
                 continue
             before = src[max(0, m.start() - 100) : m.start()]
             after = src[m.end() : min(len(src), m.end() + 100)]
@@ -624,7 +833,31 @@ class VrewFileExporter(VrewExporter):
                 before = (str(prev_text)[-120:] + " " + before).strip()
             if len(after.strip()) < 20 and next_text:
                 after = (after + " " + str(next_text)[:120]).strip()
-            speaker_id = self._infer_context_speaker(before=before, after=after, character_alias_map=character_alias_map)
+            # Fast-path: when text right after quote starts with an explicit subject
+            # marker like "...\" 판수가 ...", trust that local cue first.
+            explicit_candidates: List[str] = []
+            after_low = after.lower()
+            allowed_ids = {str(x) for x in (active_char_ids or []) if str(x)}
+            for tok, cid in character_alias_map.items():
+                if allowed_ids and str(cid) not in allowed_ids:
+                    continue
+                tok_re = re.escape(str(tok))
+                if re.search(
+                    rf"^\s*[”\"'\)\]\.,!\?…:;]*\s*{tok_re}(?:이|가|은|는)\b",
+                    after_low[:80],
+                    re.IGNORECASE,
+                ):
+                    explicit_candidates.append(str(cid))
+            explicit_candidates = list(dict.fromkeys(explicit_candidates))
+            if len(explicit_candidates) == 1:
+                speaker_id = explicit_candidates[0]
+            else:
+                speaker_id = self._infer_context_speaker(
+                    before=before,
+                    after=after,
+                    character_alias_map=character_alias_map,
+                    active_char_ids=active_char_ids,
+                )
             if speaker_id != target_char_id:
                 continue
             out.append(self._dialogue_key(quoted))
@@ -636,9 +869,10 @@ class VrewFileExporter(VrewExporter):
         before: str,
         after: str,
         character_alias_map: Dict[str, str],
+        active_char_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
-        speech_re = re.compile(r"(말|외치|묻|답하|대답|속삭|덧붙|지목|호통|입을\s*떼|입을\s*뗍)", re.IGNORECASE)
-        speech_noun_re = re.compile(r"(말|목소리|대답|외침|속삭임|호통|한마디)", re.IGNORECASE)
+        speech_re = re.compile(r"(말|외치|묻|답하|대답|속삭|덧붙|지목|호통|호령|입을\s*떼|입을\s*뗍)", re.IGNORECASE)
+        speech_noun_re = re.compile(r"(말|목소리|대답|외침|속삭임|호통|호령|한마디)", re.IGNORECASE)
         b = str(before or "")
         a = str(after or "")
         before_clause = b
@@ -654,8 +888,11 @@ class VrewFileExporter(VrewExporter):
         scores: Dict[str, int] = {}
         b_low = before_clause.lower()
         a_low = after_clause.lower()
+        allowed_ids = {str(x) for x in (active_char_ids or []) if str(x)}
         for tok, cid in character_alias_map.items():
             if not tok:
+                continue
+            if allowed_ids and str(cid) not in allowed_ids:
                 continue
             score = 0
             tok_re = re.escape(tok)
@@ -671,13 +908,18 @@ class VrewFileExporter(VrewExporter):
                 re.IGNORECASE,
             )
             before_possessive = re.search(
-                rf"{tok_re}의\s*[^\.!?\"“”\n]{{0,14}}{speech_noun_re.pattern}",
+                rf"{tok_re}의\s*[^\.!?\"“”\n]{{0,4}}{speech_noun_re.pattern}",
                 b_low[-90:],
                 re.IGNORECASE,
             )
             after_possessive = re.search(
-                rf"{tok_re}의\s*[^\.!?\"“”\n]{{0,14}}{speech_noun_re.pattern}",
+                rf"{tok_re}의\s*[^\.!?\"“”\n]{{0,4}}{speech_noun_re.pattern}",
                 a_low[:90],
+                re.IGNORECASE,
+            )
+            before_identity_tail = re.search(
+                rf"{tok_re}(?:입니다|였다|였고|이었(?:다|고)|가)\s*[^\"“”\n]{{0,48}}$",
+                b_low[-140:],
                 re.IGNORECASE,
             )
             after_lead = re.search(
@@ -696,12 +938,12 @@ class VrewFileExporter(VrewExporter):
                 re.IGNORECASE,
             )
             before_intro = re.search(
-                rf"{tok_re}(?:이|은|는|가)\s*[^\.!?\"“”\n]{{0,72}}(다가가|다가갑|고개를\s*숙|고개를\s*끄덕|손가락[^\.!?\"“”\n]{{0,18}}가리키|목소리로|차갑게|공손히|나직이|조용히|천천히)",
+                rf"{tok_re}(?:이|은|는|가)\s*[^\.!?\"“”\n]{{0,72}}(다가가|다가갑|고개를\s*숙|고개를\s*끄덕|손가락[^\.!?\"“”\n]{{0,18}}가리키|목소리로|목소리를\s*낮추|차갑게|공손히|나직이|조용히|천천히)",
                 b_low[-140:],
                 re.IGNORECASE,
             )
             after_intro = re.search(
-                rf"{tok_re}(?:이|은|는|가)\s*[^\.!?\"“”\n]{{0,72}}(다가가|다가갑|고개를\s*숙|고개를\s*끄덕|손가락[^\.!?\"“”\n]{{0,18}}가리키|목소리로|차갑게|공손히|나직이|조용히|천천히)",
+                rf"{tok_re}(?:이|은|는|가)\s*[^\.!?\"“”\n]{{0,72}}(다가가|다가갑|고개를\s*숙|고개를\s*끄덕|손가락[^\.!?\"“”\n]{{0,18}}가리키|목소리로|목소리를\s*낮추|차갑게|공손히|나직이|조용히|천천히)",
                 a_low[:140],
                 re.IGNORECASE,
             )
@@ -713,6 +955,8 @@ class VrewFileExporter(VrewExporter):
                 score += 3
             if after_possessive:
                 score += 2
+            if before_identity_tail:
+                score += 5
             if after_lead:
                 score += 2
             if before_quoted_said or after_quoted_said:
@@ -735,7 +979,23 @@ class VrewFileExporter(VrewExporter):
     def _dialogue_key(self, text: str) -> str:
         s = re.sub(r"\s+", " ", str(text or "").strip())
         s = re.sub(r'^[\"“”]+|[\"“”]+$', "", s)
+        # normalize punctuation noise so minor split/tts punctuation changes
+        # do not break per-speaker dialogue matching.
+        s = re.sub(r"[,\.\!\?\…\:\;]+", " ", s)
+        s = re.sub(r"\s+", " ", s)
         return s.strip().lower()
+
+    def _is_same_voice_profile(self, a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        sa = a.get("speaker") if isinstance(a.get("speaker"), dict) else {}
+        sb = b.get("speaker") if isinstance(b.get("speaker"), dict) else {}
+        a_id = str(sa.get("speakerId") or "").strip()
+        b_id = str(sb.get("speakerId") or "").strip()
+        if a_id and b_id:
+            return a_id == b_id
+        return (
+            str(sa.get("name") or "").strip() == str(sb.get("name") or "").strip()
+            and str(sa.get("provider") or "").strip() == str(sb.get("provider") or "").strip()
+        )
 
     def _resolve_voice_profile_for_chunk(
         self,
@@ -780,6 +1040,14 @@ class VrewFileExporter(VrewExporter):
         narrator_voice_profile: Dict[str, Any],
         rules: List[Tuple[List[str], Optional[Dict[str, Any]]]],
     ) -> Dict[str, Any]:
+        manual_map = getattr(self, "_manual_dialogue_char_map", {}) or {}
+        manual_profiles = getattr(self, "_manual_voice_profile_by_char_id", {}) or {}
+        chunk_key = self._dialogue_key(chunk_text)
+        if chunk_key and chunk_key in manual_map:
+            cid = str(manual_map.get(chunk_key) or "").strip()
+            vp = manual_profiles.get(cid)
+            if isinstance(vp, dict):
+                return vp
         best_profile: Optional[Dict[str, Any]] = None
         best_score = -1
         for target_dialogues, voice_profile in rules:
@@ -789,7 +1057,9 @@ class VrewFileExporter(VrewExporter):
             if score > best_score:
                 best_score = score
                 best_profile = voice_profile
-        if best_profile is None or best_score < 0:
+        # Require high-confidence match to avoid cross-character leakage.
+        # score >= 90: exact dialogue-level match
+        if best_profile is None or best_score < 90:
             return narrator_voice_profile
         return best_profile
 
@@ -875,13 +1145,8 @@ class VrewFileExporter(VrewExporter):
         clips: List[Dict[str, Any]],
         zip_media: List[Tuple[str, bytes]],
         character_alias_map: Dict[str, str],
-        dialogue_char_id: Optional[str],
-        dialogue_voice_profile: Optional[Dict[str, Any]],
         narrator_voice_profile: Dict[str, Any],
-        manual_dialogue_keys: Optional[List[str]] = None,
-        secondary_dialogue_char_id: Optional[str] = None,
-        secondary_dialogue_voice_profile: Optional[Dict[str, Any]] = None,
-        secondary_manual_dialogue_keys: Optional[List[str]] = None,
+        dialogue_voice_rules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         tracks: Dict[str, Any] = {}
         scene_names: Dict[str, str] = {}
@@ -889,30 +1154,41 @@ class VrewFileExporter(VrewExporter):
         # stays available even when per-image ken-burns tracks are applied.
         unified_scene_id = str(uuid4())
         scene_names[unified_scene_id] = "scene_all"
+        voice_profile_by_char_id: Dict[str, Dict[str, Any]] = {}
+        for r in (dialogue_voice_rules or []):
+            cid = str(r.get("char_id") or "").strip()
+            vp = r.get("voice_profile") if isinstance(r.get("voice_profile"), dict) else None
+            if cid and vp:
+                voice_profile_by_char_id[cid] = vp
 
         for zindex, scene in enumerate(scenes):
             sid = int(scene.get("id", 0))
             text = str(scene.get("text") or "").strip()
+            scene_char_ids = [str(x) for x in (scene.get("characters") or []) if str(x)]
             prev_text = str((scenes[zindex - 1].get("text") if zindex > 0 else "") or "")
             next_text = str((scenes[zindex + 1].get("text") if zindex + 1 < len(scenes) else "") or "")
-            target_dialogues = self._extract_dialogue_fragments_for_char(
-                text=text,
-                target_char_id=dialogue_char_id,
-                character_alias_map=character_alias_map,
-                prev_text=prev_text,
-                next_text=next_text,
-            )
-            if manual_dialogue_keys:
-                target_dialogues = list(dict.fromkeys(target_dialogues + list(manual_dialogue_keys)))
-            secondary_target_dialogues = self._extract_dialogue_fragments_for_char(
-                text=text,
-                target_char_id=secondary_dialogue_char_id,
-                character_alias_map=character_alias_map,
-                prev_text=prev_text,
-                next_text=next_text,
-            )
-            if secondary_manual_dialogue_keys:
-                secondary_target_dialogues = list(dict.fromkeys(secondary_target_dialogues + list(secondary_manual_dialogue_keys)))
+            rules_for_scene: List[Tuple[List[str], Optional[Dict[str, Any]]]] = []
+            for r in (dialogue_voice_rules or []):
+                cid = str(r.get("char_id") or "").strip()
+                if not cid:
+                    continue
+                target_dialogues = self._extract_dialogue_fragments_for_char(
+                    text=text,
+                    target_char_id=cid,
+                    character_alias_map=character_alias_map,
+                    active_char_ids=scene_char_ids,
+                    prev_text=prev_text,
+                    next_text=next_text,
+                )
+                manual_keys = r.get("manual_dialogue_keys") if isinstance(r.get("manual_dialogue_keys"), list) else []
+                if manual_keys:
+                    target_dialogues = list(dict.fromkeys(target_dialogues + [str(x) for x in manual_keys if str(x).strip()]))
+                rules_for_scene.append((target_dialogues, r.get("voice_profile") if isinstance(r.get("voice_profile"), dict) else None))
+            scene_fallback_voice: Optional[Dict[str, Any]] = None
+            img_meta = scene.get("image") if isinstance(scene.get("image"), dict) else {}
+            subject_char_id = str(img_meta.get("subject_char_id") or "").strip()
+            if subject_char_id and subject_char_id in voice_profile_by_char_id:
+                scene_fallback_voice = voice_profile_by_char_id[subject_char_id]
             text_chunks = self._split_for_clips(
                 text,
                 clip_text_max_chars,
@@ -963,11 +1239,14 @@ class VrewFileExporter(VrewExporter):
                 voice_profile = self._resolve_voice_profile_for_chunk_multi(
                     chunk_text=chunk_text,
                     narrator_voice_profile=narrator_voice_profile,
-                    rules=[
-                        (target_dialogues, dialogue_voice_profile),
-                        (secondary_target_dialogues, secondary_dialogue_voice_profile),
-                    ],
+                    rules=rules_for_scene,
                 )
+                if (
+                    scene_fallback_voice is not None
+                    and '"' in str(chunk_text or "")
+                    and self._is_same_voice_profile(voice_profile, narrator_voice_profile)
+                ):
+                    voice_profile = scene_fallback_voice
                 chunk_speaker = dict(voice_profile["speaker"])
                 chunk_volume = float(voice_profile["volume"])
                 chunk_speed = float(voice_profile["speed"])

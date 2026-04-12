@@ -88,6 +88,46 @@ clip 이미지 생성 규격
 	•	이미지 비율: 16:9
 	•	clip은 k_webtoon_clip 등 clip 전용 스타일을 사용 가능해야 한다.
 
+3.6.1 브라우저 Flow 프롬프트 작성/검증 규격(신규)
+	•	브라우저 Flow 경로에서 최종 입력 프롬프트는 `scenes[].image.prompt_used`를 기준으로 한다.
+	•	`scenes[].llm_clip_prompt`는 요약/검수용으로 유지한다.
+	•	`prompt_original`은 보존하고, 재작성 대상은 `prompt_used`로 한정한다.
+	•	각 scene의 `prompt_used`는 아래 순서를 고정한다.
+	•	1) shot/camera
+	•	2) main subject(s)
+	•	3) visible action
+	•	4) environment
+	•	5) time/lighting/weather
+	•	6) wardrobe/prop continuity
+	•	7) style/mood
+	•	8) negative constraints
+	•	`prompt_used` 길이 목표: 70~140 단어.
+	•	템플릿 감정문/범용 문구를 금지하고, scene.text 기반의 구체 동작을 1개 이상 포함해야 한다.
+	•	scene.text와 무관한 배경/인물/행동(임의 군중, 임의 화재/연기, 임의 무기, 임의 동물)은 넣지 않는다.
+	•	인물/장소 태깅은 scene.text 근거로 재검증한다.
+	•	`scenes[].characters`에는 실제 등장 인물만 넣고, 장면 미등장 인물은 제외한다.
+	•	`scenes[].places`는 집/마당/안채/관아/산길/협곡 등 직접 단서가 있을 때만 선택한다.
+	•	샷 타입/인원수 충돌을 금지한다(예: 1인 장면의 two-shot).
+	•	연속성 핵심 소품은 scene마다 명시 잠금한다(예: 한국형 `ㄱ`자/G-shaped sickle, broken sword blade).
+	•	스타일 문구는 장면 사건 설명보다 짧게 유지한다.
+	•	negative constraints는 짧게 유지하되 다음 취지를 포함한다.
+	•	no text/subtitles/speech bubbles
+	•	no modern objects
+	•	no Japanese/Chinese costume drift
+	•	anatomically coherent hands/limbs
+	•	consistent Joseon-era Korean setting
+
+Flow 실행 전 최소 점검(권장):
+```bash
+python - <<'PY'
+import json
+d=json.load(open('work/<story-id>/out/project.json'))
+ws=[len((s.get('image',{}).get('prompt_used','')).split()) for s in d['scenes']]
+print('min',min(ws),'max',max(ws),'avg',round(sum(ws)/len(ws),1))
+print('lt70',sum(w<70 for w in ws),'gt140',sum(w>140 for w in ws))
+PY
+```
+
 3.7 편집용 산출물
 	7.	.vrew 파일을 직접 생성해 out/에 저장한다.
 	•	호환/디버깅 용도로 vrew_payload.json도 함께 생성할 수 있다.
@@ -173,12 +213,15 @@ LLM 호출 진행상황 표시(heartbeat)
 8.4 이미지 API 선택
 	•	CLI에서 이미지 생성 백엔드를 선택할 수 있어야 한다.
 	•	CLI에서 텍스트 LLM 모델도 지정할 수 있어야 한다: `--llm-model <model>`
+	•	CLI에서 remote LLM extract 허용 여부를 제어할 수 있어야 한다: `--allow-remote-llm-extract`
 	•	--image-api vertex_imagen | gemini_flash_image | comfyui
 	•	--image-model 로 모델명을 오버라이드할 수 있어야 한다.
-	•	텍스트 LLM 기본값: `gemini-3-flash-preview`
+	•	텍스트 LLM 기본값: `gemini-2.0-flash`
+	•	구조 단계의 remote `LLM extract` 기본값은 비활성화이며, 기본 정책은 Codex 수동 구조 병합이다.
+	•	`gemini-3-flash-preview` 요청은 허용하지 않으며 실행 시 `gemini-2.0-flash`로 치환한다.
 	•	기본값:
 	•	vertex_imagen -> imagen-4.0-generate-001
-	•	gemini_flash_image -> gemini-2.5-flash-image
+	•	gemini_flash_image -> gemini-2.0-flash-image
 	•	comfyui -> z_image_turbo_bf16.safetensors
 	•	comfyui 사용 시:
 	•	--comfy-url 로 서버 주소를 지정할 수 있어야 한다(기본 http://127.0.0.1:8188).

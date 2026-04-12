@@ -47,7 +47,12 @@ class LLMScenePromptConfig:
 class LLMScenePromptBuilder:
     def __init__(self, cfg: Optional[LLMScenePromptConfig] = None) -> None:
         self.cfg = cfg or LLMScenePromptConfig()
-        self.client = genai.Client()
+        self.client: Optional[genai.Client] = None
+
+    def _get_client(self) -> genai.Client:
+        if self.client is None:
+            self.client = genai.Client()
+        return self.client
 
     def build(
         self,
@@ -230,7 +235,7 @@ class LLMScenePromptBuilder:
         }
 
         resp = call_with_timeout(
-            lambda: self.client.models.generate_content(
+            lambda: self._get_client().models.generate_content(
                 model=self.cfg.model,
                 contents=[
                     types.Content(

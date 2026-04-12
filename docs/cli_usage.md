@@ -43,14 +43,18 @@ python -m yadam.cli --title "제목 또는 훅 문구"
 - `--title "..."`: 새 `stories/storyNN.title` 생성 후 파이프라인 시작
 - `--make_synopsis`: `title -> synopsis`만 실행
 - `--make-story [500|1000]`: `synopsis -> story`만 실행
-- `--llm-model <model>`: 텍스트 LLM 오버라이드. 기본값은 `gemini-3-flash-preview`
+- `--llm-model <model>`: 텍스트 LLM 오버라이드. 기본값은 `gemini-2.0-flash`
+- `--allow-remote-llm-extract`: 기본 Codex 수동 구조 병합 정책을 해제하고 [2/7] remote LLM extract 허용
 - `--image-api {vertex_imagen|gemini_flash_image|comfyui}`: 이미지 백엔드 선택
 - `--image-model <model>`: 이미지 모델 오버라이드
 - `--non-interactive`: 확인 없이 끝까지 자동 진행
 - `--clean-workdir`: `work/<story-id>/` 삭제 후 재생성
 - `--through-tag-scene`: 대본 정규화, scene 분할, seed 추출, `tag_scene`까지만 수행
 - `--through-place-refs`: 캐릭터/장소 레퍼런스 이미지(7/8단계)까지만 수행
+- `--through-clip-prompts`: clip 프롬프트만 준비하고 이미지 생성 전에 중단
 - `--through-clips`: clip 이미지 생성(9단계)까지만 수행
+- `--compose-clips-from-refs`: clip 단계를 원격 생성 대신 로컬 합성으로 수행
+- `--browser-image-mode {none|gemini|flow}`: 브라우저 수동 생성 준비 모드. `gemini|flow`일 때 character/place 레퍼런스 생성을 건너뛰며, 별도 중단 옵션이 없으면 자동으로 `through-clip-prompts` 지점에서 종료
 - `--vrew-clip-max-chars <N>`: `.vrew` 자막 분할 길이
 
 ## 4. 텍스트 LLM 모델 선택
@@ -63,10 +67,13 @@ python -m yadam.cli --title "제목 또는 훅 문구"
   - scene prompt 생성
   - prompt rewrite
   - scene binding
-  - entity extract
-- 기본값: `gemini-3-flash-preview`
+  - entity extract(단, 기본 정책은 remote extract 비활성화)
+- 기본값: `gemini-2.0-flash`
 - 미지정 시 위 기본값을 사용합니다.
+- `gemini-3-flash-preview`를 요청해도 정책상 `gemini-2.0-flash`로 자동 치환됩니다.
 - 이미지 모델은 별개입니다. 이미지 쪽은 `--image-api`, `--image-model`로 제어합니다.
+- 구조 단계의 `LLM extract`는 기본 비활성화이며, `make_vrew` 플로우에서 Codex가 `project.json`을 직접 병합/보정합니다.
+- remote extract가 꼭 필요할 때만 `--allow-remote-llm-extract`를 명시합니다.
 
 예시:
 
@@ -75,7 +82,7 @@ python -m yadam.cli --title "제목 또는 훅 문구"
 python -m yadam.cli --story-id story13
 
 # 텍스트 LLM만 명시적으로 지정
-python -m yadam.cli --story-id story13 --llm-model gemini-3-flash-preview
+python -m yadam.cli --story-id story13 --llm-model gemini-2.0-flash
 
 # LLM 구조 추출 전까지만 실행
 python -m yadam.cli --story-id story13 --through-tag-scene
@@ -86,12 +93,21 @@ python -m yadam.cli --story-id story13 --through-place-refs
 # clip 생성까지만 실행
 python -m yadam.cli --story-id story13 --through-clips
 
+# clip을 로컬 합성으로만 생성
+python -m yadam.cli --story-id story13 --through-clips --compose-clips-from-refs
+
+# 브라우저(Flow/Gemini) 수동 생성 준비만 수행 (clip prompt까지)
+python -m yadam.cli --story-id story13 --browser-image-mode flow --through-clip-prompts --non-interactive
+
 # 텍스트 LLM + Gemini 이미지 모델을 함께 지정
 python -m yadam.cli \
   --story-id story13 \
-  --llm-model gemini-3-flash-preview \
+  --llm-model gemini-2.0-flash \
   --image-api gemini_flash_image \
-  --image-model gemini-2.5-flash-image
+  --image-model gemini-2.0-flash-image
+
+# 예외적으로 remote LLM extract를 켜서 실행
+python -m yadam.cli --story-id story13 --allow-remote-llm-extract
 ```
 
 ## 5. Interactive 확인 입력 규칙
@@ -168,6 +184,8 @@ Comfy 모델 선택 규칙:
 
 운영 노하우/장애 대응/모델 선별 기준:
 - `docs/comfy_cloud_playbook.md`
+- 로컬 clip 합성 운영 절차:
+  - `docs/local_clip_compose_operations.md`
 
 ## 7. 자주 쓰는 실행 예시
 
@@ -188,13 +206,41 @@ python -m yadam.cli --story-id story13 --through-place-refs
 python -m yadam.cli --story-id story13 --image-api gemini_flash_image
 
 # 텍스트 LLM을 명시적으로 지정
-python -m yadam.cli --story-id story13 --llm-model gemini-3-flash-preview
+python -m yadam.cli --story-id story13 --llm-model gemini-2.0-flash
 
 # 확인 없이 Gemini Flash Image로 전체 자동
 python -m yadam.cli --image-api gemini_flash_image --non-interactive --story-id story13 
 
 # work 디렉터리 초기화 후 재실행
 python -m yadam.cli --story-id story13 --clean-workdir
+
+# 브라우저 Flow 수동 생성 준비 (character/place 생성 skip + clip prompt 준비 후 중단)
+python -m yadam.cli --story-id story13 --browser-image-mode flow --through-clip-prompts --non-interactive
+```
+
+### 브라우저 Flow 실행 전 프롬프트 점검
+
+Flow 경로에서는 `project.json`의 `scenes[].image.prompt_used`를 최종 입력으로 사용합니다.
+`scenes[].llm_clip_prompt`는 요약/검수용으로 봅니다.
+
+최소 체크리스트:
+
+- `scene.text` 대비 `scenes[].characters`/`scenes[].places`가 맞는지
+- 샷 타입과 인원 수가 충돌하지 않는지
+- 장면 행동이 템플릿 문구가 아니라 scene.text 기반인지
+- 집/마당/관아/산길 배경 오염이 없는지
+- `prompt_used` 길이가 70~140 단어인지
+
+빠른 길이 점검:
+
+```bash
+python - <<'PY'
+import json
+d=json.load(open('work/story13/out/project.json'))
+ws=[len((s.get('image',{}).get('prompt_used','')).split()) for s in d['scenes']]
+print('min',min(ws),'max',max(ws),'avg',round(sum(ws)/len(ws),1))
+print('lt70',sum(w<70 for w in ws),'gt140',sum(w>140 for w in ws))
+PY
 ```
 
 ## 8. 장면-인물/장소 고정 규칙(자동 + 수동)

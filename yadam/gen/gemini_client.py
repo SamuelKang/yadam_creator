@@ -196,7 +196,8 @@ class GeminiFlashImageClient(ImageClient):
                 )
             except Exception as e:
                 msg = str(e)
-                if "aspect ratio is not enabled for this model" not in msg.lower():
+                msg_l = msg.lower()
+                if ("aspect ratio is not enabled" not in msg_l) and ("aspect ratio" not in msg_l):
                     raise
                 resp = _call_with_timeout(
                     lambda: self.client.models.generate_content(

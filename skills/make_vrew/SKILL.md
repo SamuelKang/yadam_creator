@@ -74,6 +74,11 @@ Treat this as a user decision gate, not as an automatic rewrite step.
 ## Codex LLM Stage
 
 After the Python stage completes, Codex must perform the role that `LLMEntityExtractor.extract(...)` normally performs.
+Repository policy note:
+
+- remote `LLM extract` is disabled by default in CLI/pipeline.
+- default ownership is Codex manual structure merge in `project.json`.
+- only explicit `--allow-remote-llm-extract` should enable remote extract.
 
 Update `work/<story-id>/out/project.json` so that it contains:
 
@@ -126,11 +131,8 @@ skills/make_vrew/scripts/run_through_place_refs.sh <story-id>
 
 `run_through_place_refs.sh` default behavior:
 
-- if `COMFYUI_API_KEY` exists: use Comfy Cloud
-- default model: `z_image_turbo_bf16.safetensors`
-- model override: `COMFYUI_MODEL` env or script 2nd arg (`run_through_place_refs.sh <story-id> <comfy-model>`)
-- workflow override: `COMFYUI_WORKFLOW_PATH` (if unset, CLI auto-selects workflow from model)
-- if key is missing: fallback to `gemini_flash_image`
+- always use `gemini_flash_image`
+- if `COMFYUI_API_KEY` exists, it is ignored by this skill script
 
 This must stop after step 8. It must not continue into clip generation or export.
 
@@ -179,7 +181,7 @@ If any issue is found:
 
 Only continue to step 9 when place references are visually consistent and semantically correct.
 
-When using Comfy Cloud + Z-Image Turbo for place refs, treat these as hard checks:
+For place refs, treat these as hard checks:
 
 - avoid photoreal drift; keep illustration/matte-painting tone
 - remove modern artifacts (utility pole, power line, traffic sign, cars)
@@ -196,30 +198,74 @@ Codex ownership rule (mandatory):
 - If `llm_extract` is skipped/failed or any scene has empty `llm_clip_prompt`, Codex must generate/fill prompts directly in `project.json` before any step-9 review.
 - Even when extractor prompts exist, treat them as draft only; Codex must normalize and repair to pass all gates before clips.
 
-First run:
+First run (migrated to `prompt_qc_flow`):
 
 ```bash
-python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+python skills/prompt_qc_flow/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
 ```
 
 Then run:
 
 ```bash
-python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
+python skills/prompt_qc_flow/scripts/review_clip_prompts.py --story-id <story-id>
 ```
 
 Then run automatic context repair:
 
 ```bash
-python skills/make_vrew/scripts/repair_clip_context_continuity.py --story-id <story-id> --apply
+python skills/prompt_qc_flow/scripts/repair_clip_context_continuity.py --story-id <story-id> --apply
 ```
 
 Then rerun both gates:
 
 ```bash
-python skills/make_vrew/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
-python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
+python skills/prompt_qc_flow/scripts/check_post_step8_prompt_gate.py --story-id <story-id>
+python skills/prompt_qc_flow/scripts/review_clip_prompts.py --story-id <story-id>
 ```
+
+Or run one-shot:
+
+```bash
+skills/prompt_qc_flow/scripts/run_prompt_qc.sh <story-id> --apply
+```
+
+Then perform mandatory Codex manual review across all clip prompts before step 9.
+This is required even if both automatic gates pass.
+
+Manual review must explicitly verify each scene prompt for:
+
+- background/location matches the scene script text (no indoor/outdoor/place mismatch)
+- character continuity is preserved (same person identity, variant, and count; no duplicate/drift)
+- emotional expression matches the script beat (fear/anger/grief/resolve/etc.)
+- action expression matches the script beat (no unrelated actions, no missing core action)
+- camera angle and shot design vary meaningfully across neighboring scenes (avoid repeated eye-level medium framing)
+- character facial expression and body action are explicitly grounded in the current scene script context (no generic placeholder acting)
+
+Then perform mandatory Scene Impact pass for opening clips (`001~010`) before step 9.
+This is a hard gate and must be done manually by Codex.
+
+Scene Impact pass (`001~010`) must verify:
+
+- each adjacent scene pair has clearly different visual intent (camera distance/angle/blocking)
+- no 3+ scene run with near-identical framing or repeated standing portrait composition
+- at least 3 different shot scales appear in `001~010` (for example wide/medium/close-up)
+- camera angles are intentionally mixed (for example over-shoulder, low-angle, high-angle, profile, top-down when justified)
+- emotional intensity is staged progressively (not flat repetition of the same tension label)
+- action cues are visually distinct per beat (approach, recoil, search, reveal, pursuit, etc.)
+- lighting/background state changes follow script progression (avoid one-tone static look)
+
+If opening Scene Impact is weak:
+
+- rewrite affected `001~010` prompts for stronger visual contrast and progression
+- keep script facts/continuity locked while increasing camera and action variation
+- mark only affected already-generated clips to `pending` and regenerate those clips
+- rerun prompt gates plus manual Scene Impact pass before step 9
+
+If any scene fails any manual review item above:
+
+- repair `scenes[].llm_clip_prompt` directly in `project.json`
+- mark only affected already-generated clips to `pending` for regeneration
+- rerun prompt gates and repeat manual review before step 9
 
 Then Codex must fix any remaining suspicious prompts directly in `project.json`.
 

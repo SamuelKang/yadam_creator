@@ -32,6 +32,155 @@
 
 변경 이력
 
+[2026-04-11] story16 Flow 운용 교정: 프롬프트-카드 대조 우선, 자동 재입력 재생성 금지
+
+- 구분: 운영/구현
+- 변경 내용:
+  - `scripts/playwright_gemini_cdp_batch.py`
+    - scene마다 `refresh` 후 진행하도록 고정.
+    - 저장 직전/직후 중복 방지 강화:
+      - 직전 scene과 `MD5` 동일 시 중단
+      - 인코딩 차이만 있는 유사 이미지도 `aHash + pixel MAD/max`로 중복 판정
+    - 완료 판정 강화:
+      - `생성 중/로딩/진행률(%)` 신호가 있으면 완료 처리 금지
+      - `--min-post-submit-sec`(기본 25초) 추가
+    - 입력 인식 강화:
+      - 실제 타이핑(`keyboard.type`) + `input/change` 이벤트 디스패치
+      - 입력값 반영 검증(`prompt_text_matches`) 후에만 제출
+    - `"프롬프트를 입력해야 합니다"` 대응 정책 변경:
+      - 자동 재입력-재생성 반복 금지
+      - `prompt_required_manual_check`로 중단 후 수동 확인 방식으로 전환
+  - `scripts/playwright_gemini_state_probe.py`
+    - Flow 탭 탐지 패턴을 `/tools/flow` 기준으로 확장 (`/ko/` 경로 포함).
+- 변경 이유:
+  - Flow에서 경고 문구가 상시/잔존하는 케이스에서 자동 재시도가 중복 생성을 유발했고,
+    완료 판정이 이르면서 직전 이미지 저장 오동작이 반복되었기 때문.
+- 영향 범위:
+  - story16 브라우저 Flow 단건 생성 운영
+  - CDP 기반 상태 프로브/저장 판정
+- 마이그레이션/호환:
+  - 기존 자동 배치 실행보다 보수적으로 멈추는 경우가 늘어남.
+  - 멈춤 상태는 수동 검증(프롬프트 재사용 대조) 후 저장/재시작 권장.
+- 비고:
+  - `count` 단독 판단은 신뢰하지 않는다. 최종 판정은 카드 프롬프트 대조를 우선한다.
+
+[2026-04-11] 브라우저 Flow 직렬 생성 모드 안정화 (1초 폴링 + 단일 submit 상태머신)
+
+- 목적
+	- Flow UI 변동(소개 팝업, 러닝 배너 미노출, 네트워크 토스트 오탐) 환경에서도 clip 단건 생성을 안정적으로 완료하기 위함.
+- 변경
+	- `scripts/playwright_gemini_cdp_batch.py`
+		- `dismiss_flow_dialogs` 강화: `Veo 3.1 Lite`, `시작하기(Get started)` 계열 팝업 닫기 대응 추가.
+		- 생성 대기 루프를 직렬 상태머신 기반으로 보강:
+			- 기본 `submit` 1회(자동 재제출 비활성)
+			- `--gen-poll-sec`(기본 1.0) 추가
+			- `--start-fallback-sec`(기본 15) 추가
+			- `--allow-retry-submit`(옵션) 추가
+		- 러닝 신호가 없는 UI에서도 이미지 변화(`count/hash/src`) 기반 시작/완료 판정 보강.
+		- `network` 토스트가 떠도 이미지 변화가 있으면 조기 실패로 끊지 않도록 오탐 완화.
+	- `docs/manual_browser_flow_workflow.md`
+		- `안정 운영 모드 (2026-04-11, story16 검증 완료)` 섹션 추가.
+		- 단건 실행 커맨드/상태 판정 규칙/운영 수칙 문서화.
+- 영향
+	- `story16` 기준 단건 직렬 실행(`002`, `003`)에서 `status=ok` 재현 확인.
+	- Flow 병렬/순서 꼬임 리스크를 운영 레벨에서 낮춤.
+
+[2026-04-09] 브라우저 Flow 테스트 중단 시점/재개 절차 문서화
+
+- 목적
+	- Flow 자동화 테스트를 다음 세션에서 동일 조건으로 재개할 수 있도록, 중단 시점 상태와 재개 절차를 고정하기 위함.
+- 변경
+	- `docs/manual_browser_flow_workflow.md`
+		- `현재 작업 상태 (2026-04-09, 중단 시점 기록)` 섹션 추가.
+		- 반영된 Flow 대응 코드 항목(랜딩 진입, preflight 컨트롤 확인, 모델 선택, 제출/저장 폴백)을 요약 기록.
+		- 최근 실패 유형(`timeout_no_image`, `save_failed_download`) 및 다음 재개 커맨드/검증 포인트 추가.
+- 영향
+	- 다음 세션에서 Flow 테스트 재시작 시 시행착오를 줄이고, 동일한 점검 순서를 재사용 가능.
+
+[2026-04-09] Flow 이미지 프롬프트 작성/검증 규칙 일반화 (story17 실전 패턴 반영)
+
+- 목적
+	- scene 단위 Flow 프롬프트를 템플릿 문구 없이 재현 가능하게 작성/검증하고, 세션마다 반복되던 수동 점검 기준을 문서화하기 위함.
+- 변경
+	- `skills/make_vrew/references/clip_prompt_review.md`
+		- `image.prompt_used`를 Flow 최종 입력으로 검수하는 규칙 추가.
+		- Flow 구조 고정(shot→subject→action→environment→lighting→continuity→style→negative) 및 70~140단어 길이 기준 추가.
+		- scene.text 기반 태깅/샷-인원 일관성/배경 오염 점검 체크리스트 추가.
+	- `skills/make_vrew/references/clip_prompt_repair.md`
+		- repair 범위를 `places`/`characters`/`character_instances`/`llm_clip_prompt`/`image.prompt_used`로 확장 명시.
+		- 템플릿 문구 제거, scene.text 근거 우선, 오탐 기반 mis-tag drift guard 규칙 추가.
+	- `docs/manual_browser_flow_workflow.md`
+		- 실행 전 프롬프트 점검 섹션 추가.
+		- Flow 입력 프롬프트 소스를 `scenes[].image.prompt_used`로 명시.
+		- 단어 수 분포 빠른 점검 커맨드 추가.
+	- `docs/cli_usage.md`
+		- 브라우저 Flow 실행 전 `image.prompt_used` 체크리스트와 길이 점검 커맨드 추가.
+	- `docs/requirements.md`
+		- 브라우저 Flow 프롬프트 작성/검증을 정식 규격(3.6.1)으로 추가.
+- 영향
+	- 브라우저 Flow 경로에서 프롬프트 품질 기준이 문서 단위로 통일됨.
+	- scene별 재작성 시 인물/장소 오염과 템플릿 냄새를 사전 차단하기 쉬워짐.
+
+[2026-04-09] 브라우저 Gemini/Flow 준비 모드 추가 (character/place skip)
+
+- 목적
+	- 브라우저 수동 생성(Gemini/Flow) 경로에서 API 레퍼런스 생성 단계를 생략하고, `project.json` 프롬프트 준비 상태까지만 빠르게 도달하기 위함.
+- 변경
+	- `yadam/cli.py`
+		- `--browser-image-mode {none|gemini|flow}` 옵션 추가.
+		- `--through-clip-prompts` 옵션 추가.
+		- 브라우저 모드 선택 시 `skip_reference_generation` 활성화 및 기본 prepare 종료 지점을 `through-clip-prompts`로 정렬.
+	- `yadam/pipeline/orchestrator.py`
+		- `PipelineConfig.skip_reference_generation`, `PipelineConfig.browser_image_mode` 추가.
+		- `PipelineConfig.stop_after_clip_prompts` 추가.
+		- [4/7] character, [5/7] place 단계를 조건부 skip 가능하게 분기 추가.
+		- clip 이미지 생성 전에 prompt만 채우고 중단하는 경로 추가.
+	- `scripts/playwright_gemini_cdp_batch.py`
+		- 브라우저 페이지 선택 로직을 URL host 기준으로 일반화(`flow` URL 대응).
+	- 문서 업데이트:
+		- `docs/cli_usage.md`
+		- `docs/manual_browser_flow_workflow.md` (신규)
+- 영향
+	- `story-id` 기준으로 브라우저 생성 준비 시간을 단축.
+	- Flow URL에서도 기존 CDP batch 스크립트를 재사용 가능.
+
+[2026-03-31] Gemini 이미지 기본 모델을 Flash 2로 변경
+
+- 목적
+	- Gemini 이미지 출력 기본 모델을 Flash 2 계열로 통일하기 위함.
+- 변경
+	- `yadam/model_defaults.py`
+		- `DEFAULT_GEMINI_IMAGE_MODEL`을 `gemini-2.0-flash-image`로 변경.
+	- 문서 업데이트:
+		- `docs/requirements.md`
+		- `docs/cli_usage.md`
+- 영향
+	- `--image-api gemini_flash_image` 사용 시, `--image-model` 미지정 기본값이 `gemini-2.0-flash-image`로 동작.
+
+[2026-03-30] LLM extract Codex 직접 수행 기본화 + 텍스트 LLM 기본 모델 `gemini-2.0-flash`로 고정
+
+- 목적
+	- 구조 추출 단계의 책임을 Codex 수동 병합으로 일원화하고, `gemini-3-flash-preview` 기본 사용을 중단하기 위함.
+- 변경
+	- `yadam/model_defaults.py`
+		- `DEFAULT_TEXT_LLM_MODEL`을 `gemini-2.0-flash`로 변경.
+		- `gemini-3-flash-preview` 이미지 fallback 매핑 제거.
+	- `yadam/pipeline/orchestrator.py`
+		- `PipelineConfig.allow_remote_llm_extract` 추가(기본 `False`).
+		- 기본 경로에서 [2/7] remote `LLM extract`를 스킵하고 `codex_owned_llm_extract_policy` 사유를 기록.
+	- `yadam/cli.py`
+		- `--allow-remote-llm-extract` 옵션 추가(명시 opt-in 시에만 remote extract 허용).
+		- 실행 로그에 `allow_remote_llm_extract` 출력 추가.
+		- `gemini-3-flash-preview` 요청 시 `gemini-2.0-flash`로 자동 치환(비사용 정책 강제).
+	- 문서/운영 규칙 업데이트:
+		- `docs/cli_usage.md`
+		- `docs/requirements.md`
+		- `skills/make_vrew/SKILL.md`
+		- `AGENTS.md`
+- 영향
+	- 기본 파이프라인은 구조 단계에서 원격 LLM extract를 호출하지 않으며, Codex 수동 구조 병합 절차를 전제로 동작.
+	- 텍스트 계열 LLM 기본값이 `gemini-2.0-flash`로 통일.
+
 [2026-03-29] Comfy 모델 선택 가능 유지 + Z-Image Turbo 기본값 정책 문서/스크립트 정렬
 
 - 목적
@@ -1260,6 +1409,25 @@
 		- `111`: `EMPTY_IMAGE_BYTES`는 긴 액션 prompt보다 더 짧고 단순한 “burning prison entrance + one boy runs into flames toward trapped guard” 식 prompt로 낮추자 복구됐다.
 - 이유
 	- 이번 `story27` 보정에서 문제의 대부분이 모델 자체보다 prompt 앵커 부족, exact cast 미고정, 상태 전환 YAML 누락, scene 동작 해석 오류에서 나왔기 때문.
+
+[2026-04-11] story16 Flow 수동 검증-저장 기준 고정 (좌상단 + 점3개 메뉴)
+
+- 목적
+	- Flow에서 `error_prompt_required` 오탐/잔존 상태에서도 잘못된 카드 저장을 막고, 동일 절차로 재현 가능한 저장 기준을 남기기 위함.
+- 검증 결과
+	- `story16` scene 017에서 아래 절차로 프롬프트 exact match 확인 후 저장 성공:
+		1. 최신 카드는 **좌상단 카드**를 기준으로 선택
+		2. 카드 hover 후 아이콘 3개 중 **3번째(점 3개)** 클릭
+		3. 메뉴 `프롬프트 재사용` 클릭
+		4. 입력창 프롬프트가 scene 017 기준 문장과 exact match인지 확인
+		5. 일치 시에만 `work/story16/clips/017.png` 저장
+- 운영 규칙
+	- DOM 마지막 이미지(하단 카드)를 최신으로 가정하지 않는다.
+	- `error_prompt_required`는 즉시 실패로 단정하지 않고, `프롬프트 재사용` exact match 결과를 우선한다.
+	- 입력창이 reCAPTCHA 토큰처럼 보이면(긴 무공백 문자열) 프롬프트로 취급하지 않는다.
+- 문서 반영
+	- `docs/manual_browser_flow_workflow.md`
+		- `C-1. 프롬프트 재사용 열기 정확 절차 (2026-04-11 검증)` 추가.
 
 [2026-03-28] ComfyUI Cloud + FLUX schnell 템플릿/참조 주입 경로 정리
 

@@ -19,14 +19,14 @@ def split_into_scenes(
     sentences: List[str],
     min_s: int = 2,
     max_s: int = 4,
-    base_len: int = 40,   # ✅ 기준 길이(기본 40)
+    base_len: int = 60,   # ✅ 기준 길이(기본 60, 기존 대비 1.5x)
 ) -> List[Scene]:
     """
     새 규칙(요구사항 그대로):
     - 최소 min_s(기본 2) 문장으로 시작
-    - threshold = min_s * base_len (기본 80)
-    - 2문장 합이 threshold(80) 초과면: 그 2문장으로 scene 확정
-    - 2문장 합이 threshold 이하(<=80)면:
+    - threshold = min_s * base_len (기본 120)
+    - 2문장 합이 threshold(120) 초과면: 그 2문장으로 scene 확정
+    - 2문장 합이 threshold 이하(<=120)면:
         - 문장을 하나씩 추가하며(최대 max_s=4)
         - 추가 후 길이가 threshold를 "넘는 순간" 그 상태로 확정
         - 끝까지(최대 4문장) 붙여도 threshold를 못 넘으면 4문장(또는 남은 만큼)으로 확정

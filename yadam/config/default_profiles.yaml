@@ -13,6 +13,23 @@ era_profiles:
       안전 지침: 노출 없음, 선정성 없음. 상해/의료적 장면은 직접 묘사 대신 분위기와 표정으로 표현. 자극적 표현 금지.
 
 style_profiles:
+  ghibli_joseon:
+    suffix: |
+      화풍: warm hand-painted animation look inspired by classic Japanese cel animation, soft watercolor background texture,
+      gentle rim lighting, expressive but natural faces, non-photoreal, cinematic composition, 16:9, 텍스트 없음.
+      만화 패널/컷 분할/말풍선/대사/자막/캡션/간판 글씨 없음.
+
+  ghibli_joseon_char:
+    suffix: |
+      화풍: hand-painted cel animation character style, warm and soft palette, delicate ink-like outlines,
+      simple but expressive facial features, subtle cloth folds, non-photoreal, 텍스트 없음.
+      만화 패널/컷 분할/말풍선/대사/자막/캡션/간판 글씨 없음.
+
+  ghibli_joseon_clip:
+    suffix: |
+      화풍: 16:9, hand-painted animation scene style, soft atmospheric perspective, warm color grading,
+      gentle brush texture, expressive silhouette acting, non-photoreal cinematic illustration.
+
   k_webtoon:
     suffix: |
       화풍: 한국 웹툰 스타일, 선명한 선과 색, 시네마틱 조명, 16:9, 텍스트 없음.

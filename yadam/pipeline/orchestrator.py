@@ -33,6 +33,7 @@ from yadam.prompts.builder import (
 
 from yadam.gen.image_client import ImageClient
 from yadam.gen.image_tasks import generate_with_fallback, RetryPolicy
+from yadam.gen.placeholder import compose_clip_from_reference_images, export_character_cutout_png, make_error_image_bytes
 
 from yadam.export.vrew_exporter import VrewExporter, VrewExportRequest
 from yadam.nlp.llm_scene_prompt import LLMScenePromptBuilder, LLMScenePromptConfig
@@ -57,14 +58,22 @@ class PipelineConfig:
     json_name: str = "project.json"
     interactive: bool = True
     llm_model: str = DEFAULT_TEXT_LLM_MODEL
+    allow_remote_llm_extract: bool = False
     stop_after_tag_scene: bool = False
     stop_after_place_refs: bool = False
     stop_after_clips: bool = False
+    stop_after_clip_prompts: bool = False
+    compose_clips_from_refs: bool = False
+    export_character_cutouts: bool = False
+    skip_reference_generation: bool = False
+    browser_image_mode: str = "none"
+    # Character/place reference 생성 이후(clip/export 단계)에는 원격 LLM 호출 금지
+    disable_remote_llm_after_refs: bool = True
 
     # ✅ scene split 파라미터(요구사항 반영)
     scene_min_s: int = 2
     scene_max_s: int = 4
-    scene_base_len: int = 40  # 기본 40
+    scene_base_len: int = 60  # 기본 60 (기존 대비 1.5x)
     vrew_clip_max_chars: int = 30
 
 
@@ -118,8 +127,8 @@ class Orchestrator:
         self.profiles = load_profiles_yaml(cfg.profiles_yaml)
         self.era = get_era(self.profiles, cfg.era_profile)
         self.style = get_style(self.profiles, cfg.style_profile)
-        self.char_style = get_style(self.profiles, "k_webtoon_char")       # characters 전용
-        self.clip_style = get_style(self.profiles, "k_webtoon_clip")
+        self.char_style = self._resolve_style_variant(cfg.style_profile, "char", fallback="k_webtoon_char")
+        self.clip_style = self._resolve_style_variant(cfg.style_profile, "clip", fallback="k_webtoon_clip")
 
         self.scene_prompt_llm = LLMScenePromptBuilder(
             LLMScenePromptConfig(model=cfg.llm_model, temperature=0.2)
@@ -133,6 +142,15 @@ class Orchestrator:
         self.story_id = Path(cfg.input_script_path).stem
         self.variant_overrides = self._load_variant_overrides()
         self.scene_bindings = self._load_scene_bindings()
+
+    def _resolve_style_variant(self, base_style: str, variant: str, fallback: str):
+        style_profiles = self.profiles.get("style_profiles", {}) if isinstance(self.profiles, dict) else {}
+        if not isinstance(style_profiles, dict):
+            return get_style(self.profiles, fallback)
+        candidate = f"{base_style}_{variant}"
+        if candidate in style_profiles:
+            return get_style(self.profiles, candidate)
+        return get_style(self.profiles, fallback)
 
     def _load_variant_overrides(self) -> List[Dict[str, Any]]:
         if yaml is None:
@@ -771,6 +789,17 @@ class Orchestrator:
                 if x not in out:
                     out.insert(0, x)
 
+        if v == "관복 위장":
+            forced = [
+                "male Joseon official disguise silhouette, straight-shoulder danryeong robe",
+                "black official samo hat with side wings clearly visible, hair fully tucked",
+                "official belt knot and layered robe front closure, no feminine skirt silhouette",
+                "concealed chest line, restrained posture, and practical official-style footwear",
+            ]
+            for x in reversed(forced):
+                if x not in out:
+                    out.insert(0, x)
+
         # Scene-level variant text often carries the strongest disguise cue.
         # Promote it into stable outfit/appearance anchors so adjacent clips
         # keep the same disguise instead of inventing a fresh costume concept.
@@ -864,23 +893,70 @@ class Orchestrator:
         anchors: List[str],
         script_text: str = "",
     ) -> str:
-        corpus = " ".join([name or "", " ".join(aliases or []), " ".join(anchors or []), script_text or ""])
-        if any(tok in corpus for tok in ("황소", "암소", "수소", "송아지", "소")):
+        human_role_names = {
+            "나리", "도련님", "아씨", "아가씨", "스님", "노승", "승려",
+            "아버지", "어머니", "아들", "딸", "소년", "소녀", "아이",
+            "사내", "여인", "노인", "할머니", "할아버지", "사또", "부인", "대감",
+        }
+
+        local_tokens = [str(name or "").strip()] + [str(a).strip() for a in (aliases or []) if str(a).strip()]
+        local_corpus = " ".join(local_tokens + [str(x).strip() for x in (anchors or []) if str(x).strip()])
+
+        # Human role labels should default to human unless there is explicit local animal evidence.
+        if any(tok in human_role_names for tok in local_tokens):
+            explicit_local_animal = any(
+                tok in local_corpus
+                for tok in (
+                    "황소", "암소", "수소", "송아지", "외양간", "발굽",
+                    "강아지", "진돗개", "개집", "짖", "꼬리",
+                    "망아지", "준마", "말굽", "기마", "마구간",
+                )
+            )
+            if not explicit_local_animal:
+                return "인간"
+
+        if any(tok in local_corpus for tok in ("황소", "암소", "수소", "송아지", "외양간", "발굽", "소달구지", "소뿔")):
             return "소"
-        if any(tok in corpus for tok in ("강아지", "개", "진돗개")):
+        if any(tok in local_corpus for tok in ("강아지", "진돗개", "개집", "짖", "꼬리")):
             return "개"
-        if any(tok in corpus for tok in ("말", "망아지", "준마")):
+        if any(tok in local_corpus for tok in ("망아지", "준마", "말굽", "기마", "마구간")):
             return "말"
-        # '누렁이'는 소/개 모두에 쓰일 수 있으므로 전체 대본 문맥으로 판별을 시도한다.
-        if "누렁이" in corpus:
-            cattle_hits = sum(1 for t in ("황소", "암소", "수소", "송아지", "외양간", "쟁기", "발굽", "고삐") if t in corpus)
-            dog_hits = sum(1 for t in ("강아지", "진돗개", "개집", "짖", "꼬리") if t in corpus)
+        # '누렁이'는 소/개 모두에 쓰일 수 있으므로 해당 이름이 있을 때만 전체 문맥을 본다.
+        if "누렁이" in local_corpus:
+            context = " ".join([local_corpus, script_text or ""])
+            cattle_hits = sum(1 for t in ("황소", "암소", "수소", "송아지", "외양간", "쟁기", "발굽", "고삐") if t in context)
+            dog_hits = sum(1 for t in ("강아지", "진돗개", "개집", "짖", "꼬리") if t in context)
             if cattle_hits > dog_hits:
                 return "소"
             if dog_hits > cattle_hits:
                 return "개"
             return "기타"
         return "인간"
+
+    def _normalize_species(
+        self,
+        name: str,
+        aliases: List[str],
+        anchors: List[str],
+        proposed_species: Any,
+        script_text: str = "",
+    ) -> str:
+        proposed = str(proposed_species or "").strip()
+        inferred = self._infer_species(name, aliases, anchors, script_text)
+        if not proposed:
+            return inferred
+        if proposed == "인간":
+            return "인간"
+
+        human_role_names = {
+            "나리", "도련님", "아씨", "아가씨", "스님", "노승", "승려",
+            "아버지", "어머니", "아들", "딸", "소년", "소녀", "아이",
+            "사내", "여인", "노인", "할머니", "할아버지", "사또", "부인", "대감",
+        }
+        local_tokens = [str(name or "").strip()] + [str(a).strip() for a in (aliases or []) if str(a).strip()]
+        if any(tok in human_role_names for tok in local_tokens) and inferred == "인간":
+            return "인간"
+        return proposed
 
     def _pick_main_characters(self, project: Dict[str, Any], max_supporting: int = 4) -> List[Dict[str, Any]]:
         chars = [c for c in project.get("characters", []) if isinstance(c, dict)]
@@ -1122,12 +1198,17 @@ class Orchestrator:
                 })
 
             # LLM 기반 추출/정규화/태깅
-            llm_debug: Dict[str, Any] = {"enabled": (not self.cfg.stop_after_tag_scene), "ok": False}
+            llm_enabled = (not self.cfg.stop_after_tag_scene) and bool(self.cfg.allow_remote_llm_extract)
+            llm_debug: Dict[str, Any] = {"enabled": llm_enabled, "ok": False}
             llm_out: Optional[Dict[str, Any]] = None
             if self.cfg.stop_after_tag_scene:
                 llm_debug["skipped"] = True
                 llm_debug["reason"] = "stop_after_tag_scene"
                 print("[2/7] LLM extract: skipped by stop_after_tag_scene")
+            elif not self.cfg.allow_remote_llm_extract:
+                llm_debug["skipped"] = True
+                llm_debug["reason"] = "codex_owned_llm_extract_policy"
+                print("[2/7] LLM extract: skipped by policy (Codex-owned step)")
             else:
                 try:
                     extractor = LLMEntityExtractor(
@@ -1204,14 +1285,12 @@ class Orchestrator:
                             "id": f"char_{i:03d}",
                             "name": name,
                             "aliases": c.get("aliases", []),
-                            "species": str(
-                                c.get("species")
-                                or self._infer_species(
-                                    name,
-                                    c.get("aliases", []),
-                                    c.get("visual_anchors", []),
-                                    clean_text,
-                                )
+                            "species": self._normalize_species(
+                                name=name,
+                                aliases=c.get("aliases", []),
+                                anchors=c.get("visual_anchors", []),
+                                proposed_species=c.get("species"),
+                                script_text=clean_text,
                             ),
                             "role": c.get("role", "조연"),
                             "traits": c.get("traits", []),
@@ -1239,7 +1318,13 @@ class Orchestrator:
                             "id": f"char_{i:03d}",
                             "name": name,
                             "hints": c.hints,
-                            "species": self._infer_species(name, [], c.hints, clean_text),
+                            "species": self._normalize_species(
+                                name=name,
+                                aliases=[],
+                                anchors=c.hints,
+                                proposed_species="",
+                                script_text=clean_text,
+                            ),
                             "image": img_meta,
                         })
 
@@ -1495,263 +1580,269 @@ class Orchestrator:
         # ------------------------------------------------------------
         # (4/7) characters generate (only if work left)
         # ------------------------------------------------------------
-        ch_left, ch_total, ch_remain = self._chars_work_left(project)
-        if ch_left:
-            if self.cfg.interactive:
-                if not self._confirm(
-                    "캐릭터 이미지 생성을 시작할까요?",
-                    f"- remain={ch_remain}/{ch_total}\n- dir={self.paths.characters_dir}"
-                ):
-                    return project
+        if self.cfg.skip_reference_generation:
+            print(f"[4/7] characters: SKIP (skip_reference_generation=true, mode={self.cfg.browser_image_mode})")
+        else:
+            ch_left, ch_total, ch_remain = self._chars_work_left(project)
+            if ch_left:
+                if self.cfg.interactive:
+                    if not self._confirm(
+                        "캐릭터 이미지 생성을 시작할까요?",
+                        f"- remain={ch_remain}/{ch_total}\n- dir={self.paths.characters_dir}"
+                    ):
+                        return project
 
-            # Keep a wider supporting set so story-critical side characters
-            # (e.g., witness/hostage/court-lady roles) also receive reference images.
-            selected_chars = self._pick_main_characters(project, max_supporting=8)
+                # Keep a wider supporting set so story-critical side characters
+                # (e.g., witness/hostage/court-lady roles) also receive reference images.
+                selected_chars = self._pick_main_characters(project, max_supporting=8)
 
-            total = 0
-            for c in selected_chars:
-                total += len(self._norm_variants(c))
+                total = 0
+                for c in selected_chars:
+                    total += len(self._norm_variants(c))
 
-            done = 0
-            skip = 0
-            regen = 0
-            gen_ok = 0
-            gen_err = 0
-            gen_time_sum = 0.0
-            gen_count = 0
-            section_t0 = time.time()
+                done = 0
+                skip = 0
+                regen = 0
+                gen_ok = 0
+                gen_err = 0
+                gen_time_sum = 0.0
+                gen_count = 0
+                section_t0 = time.time()
 
-            print(f"[4/7] characters: total_jobs={total}")
+                print(f"[4/7] characters: total_jobs={total}")
 
-            for c in selected_chars:
-                meta_map = c.setdefault("images", {})
-                if not isinstance(meta_map, dict):
-                    meta_map = {}
-                    c["images"] = meta_map
+                for c in selected_chars:
+                    meta_map = c.setdefault("images", {})
+                    if not isinstance(meta_map, dict):
+                        meta_map = {}
+                        c["images"] = meta_map
 
-                name = str(c.get("name", "unknown"))
-                gender = str(c.get("gender", "불명"))
-                age_stage = str(c.get("age_stage", "불명"))
-                anchors = c.get("visual_anchors", []) or c.get("hints", []) or []
-                if not isinstance(anchors, list):
-                    anchors = []
+                    name = str(c.get("name", "unknown"))
+                    gender = str(c.get("gender", "불명"))
+                    age_stage = str(c.get("age_stage", "불명"))
+                    anchors = c.get("visual_anchors", []) or c.get("hints", []) or []
+                    if not isinstance(anchors, list):
+                        anchors = []
 
-                for var in self._norm_variants(c):
-                    done += 1
+                    for var in self._norm_variants(c):
+                        done += 1
 
-                    safe = _safe_filename(name)
-                    var_safe = _safe_filename(var) if var else ""
-                    cid = str(c.get("id", "char_000"))
+                        safe = _safe_filename(name)
+                        var_safe = _safe_filename(var) if var else ""
+                        cid = str(c.get("id", "char_000"))
 
-                    fname = f"{cid}_{safe}" + (f"_{var_safe}" if var_safe else "") + ".jpg"
-                    ok_path = self.paths.characters_dir / fname
-                    err_path = self.paths.characters_dir / (fname.replace(".jpg", "_error.jpg"))
+                        fname = f"{cid}_{safe}" + (f"_{var_safe}" if var_safe else "") + ".jpg"
+                        ok_path = self.paths.characters_dir / fname
+                        err_path = self.paths.characters_dir / (fname.replace(".jpg", "_error.jpg"))
 
-                    variant_key = var if var else "__default__"
-                    vmeta = meta_map.get(variant_key)
-                    if not isinstance(vmeta, dict):
-                        vmeta = _default_image_meta()
-                    _cleanup_stale_error_file(vmeta, ok_path, err_path)
+                        variant_key = var if var else "__default__"
+                        vmeta = meta_map.get(variant_key)
+                        if not isinstance(vmeta, dict):
+                            vmeta = _default_image_meta()
+                        _cleanup_stale_error_file(vmeta, ok_path, err_path)
 
-                    if vmeta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
-                        skip += 1
-                        meta_map[variant_key] = vmeta
+                        if vmeta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
+                            skip += 1
+                            meta_map[variant_key] = vmeta
+                            avg = self._avg_time(gen_time_sum, gen_count)
+                            eta = self._fmt_eta(avg * max(total - done, 0))
+                            print(f"[4/7] characters {done}/{total} (skip={skip}, ok={gen_ok}, err={gen_err}, regen={regen}) ETA~{eta}: {ok_path.name}  -> skip")
+                            continue
+
+                        if vmeta.get("status") == "ok" and not ok_path.exists():
+                            regen += 1
+                            vmeta["status"] = "pending"
+                            vmeta["attempts"] = 0
+                            vmeta["last_error"] = None
+                            vmeta["path"] = None
+                            vmeta["policy_rewrite_level"] = 0
+                            vmeta["prompt_history"] = []
+
                         avg = self._avg_time(gen_time_sum, gen_count)
                         eta = self._fmt_eta(avg * max(total - done, 0))
-                        print(f"[4/7] characters {done}/{total} (skip={skip}, ok={gen_ok}, err={gen_err}, regen={regen}) ETA~{eta}: {ok_path.name}  -> skip")
+                        print(f"[4/7] characters {done}/{total} (skip={skip}, ok={gen_ok}, err={gen_err}, regen={regen}) ETA~{eta}: {ok_path.name}  -> gen")
+
+                        age_stage_for_prompt = age_stage
+                        if var in ("아동", "청소년", "청년", "중년", "노년"):
+                            age_stage_for_prompt = var
+                        anchors2 = self._filter_anchors_by_stage(list(anchors), age_stage_for_prompt)
+                        anchors2 = self._augment_anchors_with_variant(anchors2, var)
+                        anchors2 = self._filter_risky_character_sheet_anchors(anchors2)
+                        if self._is_child_stage(age_stage_for_prompt):
+                            anchors2.append("나이: 약 5세(아동)")
+
+                        wardrobe_anchors = c.get("wardrobe_anchors", [])
+                        if not isinstance(wardrobe_anchors, list):
+                            wardrobe_anchors = []
+                        wardrobe_anchors = self._filter_anchors_by_stage(wardrobe_anchors, age_stage_for_prompt)
+                        wardrobe_anchors = self._filter_anchors_by_variant(wardrobe_anchors, var)
+                        wardrobe_anchors = self._augment_anchors_with_variant(wardrobe_anchors, var)
+                        wardrobe_anchors = self._filter_risky_character_sheet_anchors(wardrobe_anchors)
+
+                        prompt = build_character_prompt(
+                            self.era, self.char_style, name, anchors2,
+                            gender=gender, age_stage=age_stage_for_prompt, variant=var,
+                            species=str(c.get("species", "인간") or "인간"),
+                            context=str(c.get("context", "민간")),
+                            court_role=str(c.get("court_role", "")),
+                            social_class=str(c.get("social_class", "불명")),
+                            wealth_level=str(c.get("wealth_level", "불명")),
+                            wardrobe_tier=str(c.get("wardrobe_tier", "T2")),
+                            wardrobe_anchors=wardrobe_anchors,
+                        )
+
+                        t0 = time.time()
+                        vmeta = generate_with_fallback(
+                            client=self.img_client,
+                            out_ok_path=ok_path,
+                            out_error_path=err_path,
+                            prompt=prompt,
+                            retry=retry,
+                            meta=vmeta,
+                            aspect_ratio="3:4",
+                        )
+                        dt = time.time() - t0
+                        gen_time_sum += dt
+                        gen_count += 1
+
+                        if vmeta.get("status") == "ok":
+                            gen_ok += 1
+                        else:
+                            gen_err += 1
+
+                        meta_map[variant_key] = vmeta
+                        c["images"] = meta_map
+                        c["image"] = vmeta
+                        self.db.save(project)
+
+                        # non-interactive: 캐릭터 레퍼런스 실패 시 즉시 중단
+                        if (not self.cfg.interactive) and vmeta.get("status") != "ok":
+                            print(
+                                "[4/7] STOP: non-interactive mode requires character/place references. "
+                                f"character generation failed: {ok_path.name}"
+                            )
+                            return project
+
+                print(f"[4/7] characters done in {self._fmt_eta(time.time()-section_t0)}: total={total} skip={skip} ok={gen_ok} err={gen_err} regen={regen}")
+
+                # 생성 완료 후: 폴더 자동 열기 + 사용자가 눈으로 확인
+                if self.cfg.interactive:
+                    self.paths.characters_dir.mkdir(parents=True, exist_ok=True)
+                    self._open_dir(self.paths.characters_dir)
+                    if not self._confirm(
+                        "캐릭터 이미지를 확인한 뒤 다음(장소)으로 진행할까요?",
+                        f"- dir={self.paths.characters_dir}"
+                    ):
+                        return project
+            else:
+                print("[4/7] characters: SKIP (already complete)")
+
+        # ------------------------------------------------------------
+        # (5/7) places generate (only if work left)
+        # ------------------------------------------------------------
+        if self.cfg.skip_reference_generation:
+            print(f"[5/7] places: SKIP (skip_reference_generation=true, mode={self.cfg.browser_image_mode})")
+        else:
+            pl_left, pl_total, pl_remain = self._places_work_left(project)
+            if pl_left:
+                if self.cfg.interactive:
+                    if not self._confirm(
+                        "장소 이미지 생성을 시작할까요?",
+                        f"- remain={pl_remain}/{pl_total}\n- dir={self.paths.places_dir}"
+                    ):
+                        return project
+
+                places = [p for p in project.get("places", []) if isinstance(p, dict)]
+                p_total = len(places)
+                p_done = 0
+                p_skip = 0
+                p_regen = 0
+                p_ok = 0
+                p_err = 0
+                p_gen_time_sum = 0.0
+                p_gen_count = 0
+                p_t0 = time.time()
+
+                print(f"[5/7] places: total={p_total}")
+                for p in places:
+                    p_done += 1
+                    img_meta = p.get("image") if isinstance(p.get("image"), dict) else _default_image_meta()
+
+                    pid = str(p.get("id", "place_000"))
+                    name = str(p.get("name", "unknown"))
+                    anchors = p.get("visual_anchors", [])
+                    hints = p.get("hints", [])
+                    use = anchors if isinstance(anchors, list) and anchors else (hints if isinstance(hints, list) else [])
+                    safe = _safe_filename(name)
+
+                    ok_path = self.paths.places_dir / f"{pid}_{safe}.jpg"
+                    err_path = self.paths.places_dir / f"{pid}_{safe}_error.jpg"
+                    _cleanup_stale_error_file(img_meta, ok_path, err_path)
+
+                    if img_meta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
+                        p_skip += 1
+                        avg = self._avg_time(p_gen_time_sum, p_gen_count)
+                        eta = self._fmt_eta(avg * max(p_total - p_done, 0))
+                        print(f"[5/7] places {p_done}/{p_total} (skip={p_skip}, ok={p_ok}, err={p_err}, regen={p_regen}) ETA~{eta}: {ok_path.name}  -> skip")
                         continue
 
-                    if vmeta.get("status") == "ok" and not ok_path.exists():
-                        regen += 1
-                        vmeta["status"] = "pending"
-                        vmeta["attempts"] = 0
-                        vmeta["last_error"] = None
-                        vmeta["path"] = None
-                        vmeta["policy_rewrite_level"] = 0
-                        vmeta["prompt_history"] = []
+                    if img_meta.get("status") == "ok" and not ok_path.exists():
+                        p_regen += 1
+                        img_meta["status"] = "pending"
+                        img_meta["attempts"] = 0
+                        img_meta["last_error"] = None
+                        img_meta["path"] = None
+                        img_meta["policy_rewrite_level"] = 0
+                        img_meta["prompt_history"] = []
 
-                    avg = self._avg_time(gen_time_sum, gen_count)
-                    eta = self._fmt_eta(avg * max(total - done, 0))
-                    print(f"[4/7] characters {done}/{total} (skip={skip}, ok={gen_ok}, err={gen_err}, regen={regen}) ETA~{eta}: {ok_path.name}  -> gen")
+                    avg = self._avg_time(p_gen_time_sum, p_gen_count)
+                    eta = self._fmt_eta(avg * max(p_total - p_done, 0))
+                    print(f"[5/7] places {p_done}/{p_total} (skip={p_skip}, ok={p_ok}, err={p_err}, regen={p_regen}) ETA~{eta}: {ok_path.name}  -> gen")
 
-                    age_stage_for_prompt = age_stage
-                    if var in ("아동", "청소년", "청년", "중년", "노년"):
-                        age_stage_for_prompt = var
-                    anchors2 = self._filter_anchors_by_stage(list(anchors), age_stage_for_prompt)
-                    anchors2 = self._augment_anchors_with_variant(anchors2, var)
-                    anchors2 = self._filter_risky_character_sheet_anchors(anchors2)
-                    if self._is_child_stage(age_stage_for_prompt):
-                        anchors2.append("나이: 약 5세(아동)")
-
-                    wardrobe_anchors = c.get("wardrobe_anchors", [])
-                    if not isinstance(wardrobe_anchors, list):
-                        wardrobe_anchors = []
-                    wardrobe_anchors = self._filter_anchors_by_stage(wardrobe_anchors, age_stage_for_prompt)
-                    wardrobe_anchors = self._filter_anchors_by_variant(wardrobe_anchors, var)
-                    wardrobe_anchors = self._augment_anchors_with_variant(wardrobe_anchors, var)
-                    wardrobe_anchors = self._filter_risky_character_sheet_anchors(wardrobe_anchors)
-
-                    prompt = build_character_prompt(
-                        self.era, self.char_style, name, anchors2,
-                        gender=gender, age_stage=age_stage_for_prompt, variant=var,
-                        species=str(c.get("species", "인간") or "인간"),
-                        context=str(c.get("context", "민간")),
-                        court_role=str(c.get("court_role", "")),
-                        social_class=str(c.get("social_class", "불명")),
-                        wealth_level=str(c.get("wealth_level", "불명")),
-                        wardrobe_tier=str(c.get("wardrobe_tier", "T2")),
-                        wardrobe_anchors=wardrobe_anchors,
-                    )
+                    prompt = build_place_prompt(self.era, self.style, name, use)
 
                     t0 = time.time()
-                    vmeta = generate_with_fallback(
+                    p["image"] = generate_with_fallback(
                         client=self.img_client,
                         out_ok_path=ok_path,
                         out_error_path=err_path,
                         prompt=prompt,
                         retry=retry,
-                        meta=vmeta,
-                        aspect_ratio="3:4",
+                        meta=img_meta,
+                        aspect_ratio="16:9",
                     )
                     dt = time.time() - t0
-                    gen_time_sum += dt
-                    gen_count += 1
+                    p_gen_time_sum += dt
+                    p_gen_count += 1
 
-                    if vmeta.get("status") == "ok":
-                        gen_ok += 1
+                    if (p["image"] or {}).get("status") == "ok":
+                        p_ok += 1
                     else:
-                        gen_err += 1
+                        p_err += 1
 
-                    meta_map[variant_key] = vmeta
-                    c["images"] = meta_map
-                    c["image"] = vmeta
                     self.db.save(project)
 
-                    # non-interactive: 캐릭터 레퍼런스 실패 시 즉시 중단
-                    if (not self.cfg.interactive) and vmeta.get("status") != "ok":
+                    # non-interactive: 장소 레퍼런스 실패 시 즉시 중단
+                    if (not self.cfg.interactive) and (p["image"] or {}).get("status") != "ok":
                         print(
-                            "[4/7] STOP: non-interactive mode requires character/place references. "
-                            f"character generation failed: {ok_path.name}"
+                            "[5/7] STOP: non-interactive mode requires character/place references. "
+                            f"place generation failed: {ok_path.name}"
                         )
                         return project
 
-            print(f"[4/7] characters done in {self._fmt_eta(time.time()-section_t0)}: total={total} skip={skip} ok={gen_ok} err={gen_err} regen={regen}")
+                print(f"[5/7] places done in {self._fmt_eta(time.time()-p_t0)}: total={p_total} skip={p_skip} ok={p_ok} err={p_err} regen={p_regen}")
 
-            # ✅ 생성 완료 후: 폴더 자동 열기 + 사용자가 눈으로 확인
-            if self.cfg.interactive:
-                self.paths.characters_dir.mkdir(parents=True, exist_ok=True)
-                self._open_dir(self.paths.characters_dir)
-                if not self._confirm(
-                    "캐릭터 이미지를 확인한 뒤 다음(장소)으로 진행할까요?",
-                    f"- dir={self.paths.characters_dir}"
-                ):
-                    return project
-        else:
-            print("[4/7] characters: SKIP (already complete)")
-
-        # ------------------------------------------------------------
-        # (5/7) places generate (only if work left)
-        # ------------------------------------------------------------
-        pl_left, pl_total, pl_remain = self._places_work_left(project)
-        if pl_left:
-            if self.cfg.interactive:
-                if not self._confirm(
-                    "장소 이미지 생성을 시작할까요?",
-                    f"- remain={pl_remain}/{pl_total}\n- dir={self.paths.places_dir}"
-                ):
-                    return project
-
-            places = [p for p in project.get("places", []) if isinstance(p, dict)]
-            p_total = len(places)
-            p_done = 0
-            p_skip = 0
-            p_regen = 0
-            p_ok = 0
-            p_err = 0
-            p_gen_time_sum = 0.0
-            p_gen_count = 0
-            p_t0 = time.time()
-
-            print(f"[5/7] places: total={p_total}")
-            for p in places:
-                p_done += 1
-                img_meta = p.get("image") if isinstance(p.get("image"), dict) else _default_image_meta()
-
-                pid = str(p.get("id", "place_000"))
-                name = str(p.get("name", "unknown"))
-                anchors = p.get("visual_anchors", [])
-                hints = p.get("hints", [])
-                use = anchors if isinstance(anchors, list) and anchors else (hints if isinstance(hints, list) else [])
-                safe = _safe_filename(name)
-
-                ok_path = self.paths.places_dir / f"{pid}_{safe}.jpg"
-                err_path = self.paths.places_dir / f"{pid}_{safe}_error.jpg"
-                _cleanup_stale_error_file(img_meta, ok_path, err_path)
-
-                if img_meta.get("status") == "ok" and ok_path.exists() and (not err_path.exists()):
-                    p_skip += 1
-                    avg = self._avg_time(p_gen_time_sum, p_gen_count)
-                    eta = self._fmt_eta(avg * max(p_total - p_done, 0))
-                    print(f"[5/7] places {p_done}/{p_total} (skip={p_skip}, ok={p_ok}, err={p_err}, regen={p_regen}) ETA~{eta}: {ok_path.name}  -> skip")
-                    continue
-
-                if img_meta.get("status") == "ok" and not ok_path.exists():
-                    p_regen += 1
-                    img_meta["status"] = "pending"
-                    img_meta["attempts"] = 0
-                    img_meta["last_error"] = None
-                    img_meta["path"] = None
-                    img_meta["policy_rewrite_level"] = 0
-                    img_meta["prompt_history"] = []
-
-                avg = self._avg_time(p_gen_time_sum, p_gen_count)
-                eta = self._fmt_eta(avg * max(p_total - p_done, 0))
-                print(f"[5/7] places {p_done}/{p_total} (skip={p_skip}, ok={p_ok}, err={p_err}, regen={p_regen}) ETA~{eta}: {ok_path.name}  -> gen")
-
-                prompt = build_place_prompt(self.era, self.style, name, use)
-
-                t0 = time.time()
-                p["image"] = generate_with_fallback(
-                    client=self.img_client,
-                    out_ok_path=ok_path,
-                    out_error_path=err_path,
-                    prompt=prompt,
-                    retry=retry,
-                    meta=img_meta,
-                    aspect_ratio="16:9",
-                )
-                dt = time.time() - t0
-                p_gen_time_sum += dt
-                p_gen_count += 1
-
-                if (p["image"] or {}).get("status") == "ok":
-                    p_ok += 1
-                else:
-                    p_err += 1
-
-                self.db.save(project)
-
-                # non-interactive: 장소 레퍼런스 실패 시 즉시 중단
-                if (not self.cfg.interactive) and (p["image"] or {}).get("status") != "ok":
-                    print(
-                        "[5/7] STOP: non-interactive mode requires character/place references. "
-                        f"place generation failed: {ok_path.name}"
-                    )
-                    return project
-
-            print(f"[5/7] places done in {self._fmt_eta(time.time()-p_t0)}: total={p_total} skip={p_skip} ok={p_ok} err={p_err} regen={p_regen}")
-
-            # ✅ 생성 완료 후: 폴더 자동 열기 + 사용자가 눈으로 확인
-            if self.cfg.interactive:
-                self.paths.places_dir.mkdir(parents=True, exist_ok=True)
-                self._open_dir(self.paths.places_dir)
-                if not self._confirm(
-                    "장소 이미지를 확인한 뒤 다음(클립)으로 진행할까요?",
-                    f"- dir={self.paths.places_dir}"
-                ):
-                    return project
-        else:
-            print("[5/7] places: SKIP (already complete)")
+                # 생성 완료 후: 폴더 자동 열기 + 사용자가 눈으로 확인
+                if self.cfg.interactive:
+                    self.paths.places_dir.mkdir(parents=True, exist_ok=True)
+                    self._open_dir(self.paths.places_dir)
+                    if not self._confirm(
+                        "장소 이미지를 확인한 뒤 다음(클립)으로 진행할까요?",
+                        f"- dir={self.paths.places_dir}"
+                    ):
+                        return project
+            else:
+                print("[5/7] places: SKIP (already complete)")
 
         if self.cfg.stop_after_place_refs:
             project.setdefault("project", {})
@@ -1762,13 +1853,80 @@ class Orchestrator:
             return project
 
         # non-interactive 모드: character/place 생성 후 규칙 파일이 없으면 clip 단계 전에 중단
-        if (not self.cfg.interactive) and (not self._has_story_rule_file_for_resume()):
+        if (not self.cfg.interactive) and (not self.cfg.skip_reference_generation) and (not self._has_story_rule_file_for_resume()):
             print(
                 f"[5.5/7] STOP: non-interactive mode paused after character/place generation. "
                 f"Please request Codex to create story rule files."
             )
             print(f"{self.story_id} 인물 규칙 파일 생성을 codex에게 요청 해주세요")
             return project
+
+        # ------------------------------------------------------------
+        # character cutout PNG export (optional)
+        # ------------------------------------------------------------
+        if self.cfg.export_character_cutouts or self.cfg.compose_clips_from_refs:
+            chars_all = [c for c in project.get("characters", []) if isinstance(c, dict)]
+            cut_total = 0
+            cut_ok = 0
+            cut_skip = 0
+            cut_err = 0
+            for c in chars_all:
+                images = c.get("images")
+                if isinstance(images, dict):
+                    for k, v in images.items():
+                        if isinstance(v, dict):
+                            cut_total += 1
+                else:
+                    cut_total += 1
+            if cut_total > 0:
+                print(f"[5.8/7] character cutouts: total={cut_total}")
+            for c in chars_all:
+                images = c.get("images")
+                targets: List[Tuple[str, Dict[str, Any]]] = []
+                if isinstance(images, dict):
+                    for k, v in images.items():
+                        if isinstance(v, dict):
+                            targets.append((str(k), v))
+                else:
+                    img = c.get("image")
+                    if isinstance(img, dict):
+                        targets.append(("__default__", img))
+
+                for vkey, meta in targets:
+                    src = str(meta.get("path") or "").strip()
+                    if not src or (not Path(src).exists()):
+                        cut_err += 1
+                        continue
+                    dst = str(Path(src).with_suffix("").as_posix() + "_cutout.png")
+                    if str(meta.get("cutout_path") or "") == dst and Path(dst).exists():
+                        cut_skip += 1
+                        continue
+                    try:
+                        export_character_cutout_png(src, dst)
+                        meta["cutout_path"] = dst
+                        ph = meta.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({"phase": "character_cutout_export", "src": src, "dst": dst})
+                        meta["prompt_history"] = ph
+                        cut_ok += 1
+                    except Exception as e:
+                        meta["cutout_error"] = str(e)
+                        cut_err += 1
+
+                # representative image도 해당 variant를 가리키도록 동기화
+                rep = c.get("image")
+                if isinstance(rep, dict) and not rep.get("cutout_path"):
+                    images2 = c.get("images")
+                    if isinstance(images2, dict):
+                        for _, vm in images2.items():
+                            if isinstance(vm, dict) and vm.get("path") == rep.get("path") and vm.get("cutout_path"):
+                                rep["cutout_path"] = vm.get("cutout_path")
+                                break
+
+            if cut_total > 0:
+                print(f"[5.8/7] character cutouts done: total={cut_total} ok={cut_ok} skip={cut_skip} err={cut_err}")
+            self.db.save(project)
 
         # ------------------------------------------------------------
         # (6/7) clips generate (only if work left)
@@ -2009,6 +2167,35 @@ class Orchestrator:
                     del prev_ctx[:-2]
 
                 return prompt
+
+            def _build_local_scene_prompt(
+                sid: int,
+                s_obj: Dict[str, Any],
+                place_name: Optional[str],
+                char_names: List[str],
+            ) -> str:
+                scene_text_raw = str(s_obj.get("text") or "").strip()
+                scene_text_clean = re.sub(r"[\"“][^\"”\n]{1,220}[\"”]", " ", scene_text_raw)
+                scene_text_clean = re.sub(r"\s+", " ", scene_text_clean).strip()
+                if not scene_text_clean:
+                    scene_text_clean = "A tense moment unfolds in silence."
+
+                shot = _shot_hint(sid)
+                place_part = place_name.strip() if isinstance(place_name, str) and place_name.strip() else "a Joseon-era village setting"
+                if char_names:
+                    shown = ", ".join([str(x) for x in char_names[:2]])
+                    subject_line = f"Primary subjects: {shown}."
+                else:
+                    subject_line = "Primary subjects: village residents."
+
+                return (
+                    f"{shot.capitalize()} at {place_part}. "
+                    f"{subject_line} "
+                    f"Visible action: {scene_text_clean}. "
+                    "Ghibli-inspired hand-drawn 2D animation, painterly backgrounds, "
+                    "soft natural lighting, expressive but grounded acting, Joseon-era wardrobe continuity, "
+                    "Korean/East-Asian facial proportions, no visible text, subtitles, or speech bubbles."
+                )
 
             print(f"[6/7] clips: total={s_total}")
 
@@ -2288,15 +2475,150 @@ class Orchestrator:
                 )
                 return f"{ptxt}\n\n{safety_tail}"
 
-            def _scene_reference_image_paths(s_obj: Dict[str, Any]) -> List[str]:
+            def _scene_reference_image_paths(
+                s_obj: Dict[str, Any],
+                prev_s_obj: Optional[Dict[str, Any]] = None,
+            ) -> tuple[List[str], Dict[str, Any]]:
                 char_refs: List[str] = []
                 char_ids2 = s_obj.get("characters", []) if isinstance(s_obj.get("characters"), list) else []
+                scene_text = str(s_obj.get("text") or "")
+                layout_hint: Dict[str, Any] = {}
+
+                def _is_dialogue_like(text: str) -> bool:
+                    t = text or ""
+                    if any(q in t for q in ['"', "'", "“", "”", "‘", "’", "「", "」"]):
+                        return True
+                    return bool(re.search(r"(말하|묻|답하|외치|소리치|속삭|중얼|대꾸)", t))
+
+                def _pick_subject_char_id(text: str, ids: List[str]) -> Optional[str]:
+                    t = text or ""
+                    # If dialogue exists, prioritize who remains focal after the spoken line.
+                    quote_marks = ['"', "“", "”", "「", "」"]
+                    tail = t
+                    last_q = max([t.rfind(q) for q in quote_marks] + [-1])
+                    if last_q >= 0 and last_q + 1 < len(t):
+                        tail = t[last_q + 1 :]
+
+                    best_tail_cid: Optional[str] = None
+                    best_tail_hits = 0
+                    for cid in ids:
+                        cobj = char_map.get(str(cid))
+                        if not isinstance(cobj, dict):
+                            continue
+                        tokens: List[str] = []
+                        name = str(cobj.get("name") or "").strip()
+                        if name:
+                            tokens.append(name)
+                        aliases = cobj.get("aliases") if isinstance(cobj.get("aliases"), list) else []
+                        for a in aliases:
+                            aa = str(a or "").strip()
+                            if aa:
+                                tokens.append(aa)
+                        hits = sum(tail.count(tok) for tok in tokens if tok)
+                        if hits > best_tail_hits:
+                            best_tail_hits = hits
+                            best_tail_cid = str(cid)
+                    if best_tail_cid and best_tail_hits > 0:
+                        return best_tail_cid
+
+                    for cid in ids:
+                        cobj = char_map.get(str(cid))
+                        if not isinstance(cobj, dict):
+                            continue
+                        name = str(cobj.get("name") or "").strip()
+                        if name and name in t:
+                            return str(cid)
+                        aliases = cobj.get("aliases") if isinstance(cobj.get("aliases"), list) else []
+                        for a in aliases:
+                            aa = str(a or "").strip()
+                            if aa and aa in t:
+                                return str(cid)
+                    return str(ids[0]) if ids else None
+
+                dialogue_like = _is_dialogue_like(scene_text)
                 selected = self._select_scene_character_ids(
-                    str(s_obj.get("text", "")),
+                    scene_text,
                     char_ids2,
                     char_map,
                     limit=3,
                 )
+                manual_subject = ""
+                img_meta_local = s_obj.get("image")
+                if isinstance(img_meta_local, dict):
+                    manual_subject = str(img_meta_local.get("subject_char_id") or "").strip()
+                scene_char_ids_norm = [str(x) for x in char_ids2 if str(x)]
+                if manual_subject and manual_subject in scene_char_ids_norm:
+                    dialogue_like = True
+
+                subject: Optional[str] = None
+                if manual_subject and manual_subject in scene_char_ids_norm:
+                    subject = manual_subject
+                elif dialogue_like and selected:
+                    subject = _pick_subject_char_id(scene_text, selected)
+
+                def _subject_side_from_scene(obj: Optional[Dict[str, Any]], sid: str) -> Optional[str]:
+                    if not isinstance(obj, dict):
+                        return None
+                    cids = obj.get("characters", [])
+                    if not isinstance(cids, list):
+                        return None
+                    try:
+                        idx = [str(x) for x in cids].index(str(sid))
+                    except ValueError:
+                        return None
+                    if idx == 0:
+                        return "left"
+                    if idx == 1:
+                        return "right"
+                    return None
+
+                selected = [str(x) for x in selected if str(x)]
+                if not selected:
+                    selected = scene_char_ids_norm[:3]
+
+                if subject and subject not in selected:
+                    selected.insert(0, subject)
+
+                min_visible_chars = 2 if len(scene_char_ids_norm) >= 2 else 1
+                if len(selected) < min_visible_chars:
+                    for cid_fill in scene_char_ids_norm:
+                        if cid_fill not in selected:
+                            selected.append(cid_fill)
+                        if len(selected) >= min_visible_chars:
+                            break
+
+                # keep at most 3 visible characters in local compose mode
+                selected = selected[:3]
+
+                side: Optional[str] = None
+                if subject:
+                    side = _subject_side_from_scene(s_obj, subject)
+                    if side is None:
+                        side = _subject_side_from_scene(prev_s_obj, subject)
+
+                # Reorder so subject keeps relative screen side while still showing others.
+                if subject and subject in selected and len(selected) >= 2:
+                    others = [cid for cid in selected if cid != subject]
+                    if len(selected) == 2:
+                        selected = [subject, others[0]] if side != "right" else [others[0], subject]
+                    else:
+                        if side == "left":
+                            selected = [subject] + others[:2]
+                        elif side == "right":
+                            selected = others[:2] + [subject]
+                        else:
+                            selected = [others[0], subject] + others[1:2]
+                    layout_hint["focus_subject"] = True
+                    try:
+                        layout_hint["focus_char_index"] = selected.index(subject)
+                    except Exception:
+                        layout_hint["focus_char_index"] = 0
+
+                if dialogue_like and subject and len(selected) == 1 and side:
+                    layout_hint["one_subject_side"] = side
+                layout_hint["selected_char_ids"] = [str(x) for x in selected[:3]]
+                if subject:
+                    layout_hint["subject_char_id"] = str(subject)
                 ci2 = s_obj.get("character_instances", [])
                 inst_map2: Dict[str, str] = {}
                 if isinstance(ci2, list):
@@ -2310,14 +2632,23 @@ class Orchestrator:
                         continue
                     variant2 = inst_map2.get(cid3, "")
                     img_path = ""
+                    cutout_path = ""
                     images = cobj2.get("images")
                     if variant2 and isinstance(images, dict):
                         vmeta = images.get(variant2)
                         if isinstance(vmeta, dict):
+                            cutout_path = str(vmeta.get("cutout_path") or "")
                             img_path = str(vmeta.get("path") or "")
+                    if cutout_path and Path(cutout_path).exists():
+                        char_refs.append(cutout_path)
+                        continue
                     if not img_path:
                         img_meta2 = cobj2.get("image")
                         if isinstance(img_meta2, dict):
+                            cutout_path = str(img_meta2.get("cutout_path") or "")
+                            if cutout_path and Path(cutout_path).exists():
+                                char_refs.append(cutout_path)
+                                continue
                             img_path = str(img_meta2.get("path") or "")
                     if img_path and Path(img_path).exists():
                         char_refs.append(img_path)
@@ -2325,7 +2656,37 @@ class Orchestrator:
                 place_ref: Optional[str] = None
                 place_ids2 = s_obj.get("places", []) if isinstance(s_obj.get("places"), list) else []
                 if place_ids2:
-                    p_obj = place_map.get(str(place_ids2[0]))
+                    scene_prompt_l = str(s_obj.get("llm_clip_prompt") or "").lower()
+
+                    def _score_place(p_obj: Dict[str, Any]) -> int:
+                        score = 0
+                        bag: List[str] = []
+                        nm = str(p_obj.get("name") or "").lower()
+                        if nm:
+                            bag.append(nm)
+                        for a in (p_obj.get("visual_anchors") or []):
+                            if isinstance(a, str) and a.strip():
+                                bag.append(a.lower())
+                        text_blob = " ".join(bag)
+                        for tok in re.findall(r"[a-z][a-z0-9_-]{2,}", scene_prompt_l):
+                            if tok in text_blob:
+                                score += 1
+                        return score
+
+                    best_pid: Optional[str] = None
+                    best_score = -1
+                    for pid in place_ids2:
+                        p_obj = place_map.get(str(pid))
+                        if not isinstance(p_obj, dict):
+                            continue
+                        sc = _score_place(p_obj)
+                        if sc > best_score:
+                            best_score = sc
+                            best_pid = str(pid)
+
+                    pick_pid = best_pid or str(place_ids2[0])
+                    layout_hint["selected_place_id"] = pick_pid
+                    p_obj = place_map.get(pick_pid)
                     if isinstance(p_obj, dict):
                         p_img = p_obj.get("image")
                         if isinstance(p_img, dict):
@@ -2340,9 +2701,147 @@ class Orchestrator:
                 if place_ref and place_ref not in refs:
                     refs.append(place_ref)
 
-                return refs[:4]
+                return refs[:4], layout_hint
 
-            for s in scenes_list:
+            def _audit_clip_character_alignment() -> Dict[str, Any]:
+                rows: List[Dict[str, Any]] = []
+                total = 0
+                mismatch = 0
+                warning = 0
+                ok = 0
+                char_path_to_id: Dict[str, str] = {}
+
+                for cid, cobj in char_map.items():
+                    if not isinstance(cobj, dict):
+                        continue
+                    img = cobj.get("image")
+                    if isinstance(img, dict):
+                        p = str(img.get("path") or "").strip()
+                        cp = str(img.get("cutout_path") or "").strip()
+                        if p:
+                            char_path_to_id[str(Path(p).resolve())] = str(cid)
+                        if cp:
+                            char_path_to_id[str(Path(cp).resolve())] = str(cid)
+                    images = cobj.get("images")
+                    if isinstance(images, dict):
+                        for _, vmeta in images.items():
+                            if not isinstance(vmeta, dict):
+                                continue
+                            p2 = str(vmeta.get("path") or "").strip()
+                            cp2 = str(vmeta.get("cutout_path") or "").strip()
+                            if p2:
+                                char_path_to_id[str(Path(p2).resolve())] = str(cid)
+                            if cp2:
+                                char_path_to_id[str(Path(cp2).resolve())] = str(cid)
+
+                for s_obj in scenes_list:
+                    total += 1
+                    sid = int(s_obj.get("id") or 0)
+                    text = str(s_obj.get("text") or "")
+                    scene_char_ids = [str(x) for x in (s_obj.get("characters") or []) if isinstance(x, str)]
+                    img_meta = s_obj.get("image") if isinstance(s_obj.get("image"), dict) else {}
+
+                    # Expected mentions from script text
+                    mentioned_ids: List[str] = []
+                    for cid in scene_char_ids:
+                        cobj = char_map.get(cid)
+                        if not isinstance(cobj, dict):
+                            continue
+                        tokens: List[str] = []
+                        name = str(cobj.get("name") or "").strip()
+                        if name:
+                            tokens.append(name)
+                        aliases = cobj.get("aliases") if isinstance(cobj.get("aliases"), list) else []
+                        for a in aliases:
+                            aa = str(a or "").strip()
+                            if aa:
+                                tokens.append(aa)
+                        if any(tok in text for tok in tokens):
+                            mentioned_ids.append(cid)
+
+                    displayed_ids: List[str] = []
+                    manual_subject = str((img_meta or {}).get("subject_char_id") or "").strip()
+                    if manual_subject:
+                        displayed_ids = [manual_subject]
+                    else:
+                        ph = (img_meta or {}).get("prompt_history")
+                        if isinstance(ph, list):
+                            for ent in reversed(ph):
+                                if not isinstance(ent, dict):
+                                    continue
+                                phase = str(ent.get("phase") or "")
+                                if phase.startswith("compose_from_refs"):
+                                    lh = ent.get("layout_hint")
+                                    if isinstance(lh, dict):
+                                        scids = lh.get("selected_char_ids")
+                                        if isinstance(scids, list):
+                                            displayed_ids = [str(x) for x in scids if str(x)]
+                                    if not displayed_ids:
+                                        refs = ent.get("references")
+                                        if isinstance(refs, list):
+                                            for rp in refs:
+                                                rps = str(rp or "").strip()
+                                                if not rps:
+                                                    continue
+                                                rid = char_path_to_id.get(str(Path(rps).resolve()))
+                                                if rid and rid not in displayed_ids:
+                                                    displayed_ids.append(rid)
+                                    if displayed_ids:
+                                        break
+
+                    issues: List[str] = []
+                    dialogue_like = bool(any(q in text for q in ['"', "'", "“", "”", "‘", "’", "「", "」"]) or re.search(r"(말하|묻|답하|외치|소리치|속삭|중얼|대꾸)", text))
+
+                    for did in displayed_ids:
+                        if did not in scene_char_ids:
+                            issues.append(f"displayed_not_in_scene_characters:{did}")
+
+                    if dialogue_like and mentioned_ids and len(displayed_ids) == 1:
+                        if displayed_ids[0] not in mentioned_ids:
+                            issues.append(
+                                "dialogue_subject_mismatch:"
+                                f"displayed={displayed_ids[0]} expected_one_of={','.join(mentioned_ids)}"
+                            )
+
+                    status = "ok"
+                    if issues:
+                        status = "mismatch"
+                        mismatch += 1
+                    elif self.cfg.compose_clips_from_refs and not displayed_ids:
+                        status = "warning"
+                        warning += 1
+                        issues.append("no_displayed_character_metadata")
+                    else:
+                        ok += 1
+
+                    rows.append({
+                        "scene_id": sid,
+                        "status": status,
+                        "scene_characters": scene_char_ids,
+                        "mentioned_characters": mentioned_ids,
+                        "displayed_characters": displayed_ids,
+                        "issues": issues,
+                    })
+
+                summary = {
+                    "total": total,
+                    "ok": ok,
+                    "warning": warning,
+                    "mismatch": mismatch,
+                }
+                out_path = self.paths.out_dir / "clip_character_audit.json"
+                out_path.write_text(
+                    json.dumps({"summary": summary, "items": rows}, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                print(
+                    "[6.8/7] clip character audit: "
+                    f"total={total} ok={ok} warning={warning} mismatch={mismatch} "
+                    f"-> {out_path}"
+                )
+                return summary
+
+            for idx_scene, s in enumerate(scenes_list):
                 s_done += 1
                 img_meta = s.get("image") if isinstance(s.get("image"), dict) else _default_image_meta()
 
@@ -2412,33 +2911,46 @@ class Orchestrator:
                     ph.append({"phase": "llm_extract_scene_prompt", "source": "structure_stage"})
                     img_meta["prompt_history"] = ph
 
-                if prompt is None:
-                    try:
-                        prompt = _build_llm_scene_prompt(sid, s, place_name)
-                    except Exception as e:
-                        s_prompt_err += 1
-                        err_msg = f"LLM_SCENE_PROMPT_ERROR: {e}"
-                        img_meta["status"] = "error"
-                        img_meta["last_error"] = err_msg
-                        img_meta["attempts"] = int(img_meta.get("attempts") or 0) + 1
+                clip_llm_disabled = bool(self.cfg.compose_clips_from_refs) or bool(self.cfg.disable_remote_llm_after_refs)
 
+                if prompt is None:
+                    if clip_llm_disabled:
+                        prompt = _build_local_scene_prompt(sid, s, place_name, char_names)
                         ph = img_meta.get("prompt_history")
                         if not isinstance(ph, list):
                             ph = []
-                        ph.append({"phase": "llm_scene_prompt", "error": err_msg})
+                        ph.append({
+                            "phase": "local_scene_prompt_fallback",
+                            "reason": "clip_llm_disabled",
+                        })
                         img_meta["prompt_history"] = ph
-
+                    else:
                         try:
-                            err_path.parent.mkdir(parents=True, exist_ok=True)
-                            if not err_path.exists():
-                                err_path.write_bytes(b"")
-                        except Exception:
-                            pass
+                            prompt = _build_llm_scene_prompt(sid, s, place_name)
+                        except Exception as e:
+                            s_prompt_err += 1
+                            err_msg = f"LLM_SCENE_PROMPT_ERROR: {e}"
+                            img_meta["status"] = "error"
+                            img_meta["last_error"] = err_msg
+                            img_meta["attempts"] = int(img_meta.get("attempts") or 0) + 1
 
-                        s["image"] = img_meta
-                        self.db.save(project)
-                        print(f"  - prompt: FAIL -> {err_path.name} ({err_msg})")
-                        continue
+                            ph = img_meta.get("prompt_history")
+                            if not isinstance(ph, list):
+                                ph = []
+                            ph.append({"phase": "llm_scene_prompt", "error": err_msg})
+                            img_meta["prompt_history"] = ph
+
+                            try:
+                                err_path.parent.mkdir(parents=True, exist_ok=True)
+                                if not err_path.exists():
+                                    err_path.write_bytes(b"")
+                            except Exception:
+                                pass
+
+                            s["image"] = img_meta
+                            self.db.save(project)
+                            print(f"  - prompt: FAIL -> {err_path.name} ({err_msg})")
+                            continue
 
                 prompt = str(prompt).strip()
                 if not prompt:
@@ -2453,24 +2965,114 @@ class Orchestrator:
                     continue
 
                 prompt = _apply_clip_safety_constraints(prompt, s)
+                s["llm_clip_prompt"] = prompt
                 img_meta["prompt_original"] = img_meta.get("prompt_original") or prompt[:500]
                 img_meta["prompt_used"] = prompt
-                ref_paths = _scene_reference_image_paths(s)
+                if self.cfg.stop_after_clip_prompts:
+                    if img_meta.get("status") != "ok":
+                        img_meta["status"] = "pending"
+                        img_meta["last_error"] = None
+                        img_meta["path"] = None
+                    img_meta["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    s["image"] = img_meta
+                    s_ok += 1
+                    s_consecutive_err = 0
+                    self.db.save(project)
+                    continue
+                prev_scene_obj = scenes_list[idx_scene - 1] if idx_scene > 0 else None
+                ref_paths, layout_hint = _scene_reference_image_paths(s, prev_scene_obj)
+                fallback_place_path = ""
+                try:
+                    for pl in (project.get("places") or []):
+                        img = pl.get("image") if isinstance(pl, dict) else None
+                        pth = ""
+                        if isinstance(img, dict):
+                            pth = str(img.get("path") or "").strip()
+                        if (not pth) and isinstance(pl, dict):
+                            imgs = pl.get("images")
+                            if isinstance(imgs, dict):
+                                dv = imgs.get("__default__")
+                                if isinstance(dv, dict):
+                                    pth = str(dv.get("path") or "").strip()
+                        if pth and Path(pth).exists():
+                            fallback_place_path = pth
+                            break
+                except Exception:
+                    fallback_place_path = ""
 
-                t0 = time.time()
-                s["image"] = generate_with_fallback(
-                    client=self.img_client,
-                    out_ok_path=ok_path,
-                    out_error_path=err_path,
-                    prompt=prompt,
-                    retry=retry,
-                    meta=img_meta,
-                    aspect_ratio="16:9",
-                    reference_image_paths=ref_paths,
-                )
-                dt = time.time() - t0
-                s_gen_time_sum += dt
-                s_gen_count += 1
+                if self.cfg.compose_clips_from_refs:
+                    t0 = time.time()
+                    try:
+                        composed = compose_clip_from_reference_images(
+                            reference_image_paths=ref_paths,
+                            width=1280,
+                            height=720,
+                            one_subject_side=str(layout_hint.get("one_subject_side") or "center"),
+                            focus_char_index=int(layout_hint.get("focus_char_index") or -1),
+                            fallback_place_path=fallback_place_path,
+                        )
+                        ok_path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = ok_path.with_suffix(ok_path.suffix + ".tmp")
+                        tmp.write_bytes(composed)
+                        tmp.replace(ok_path)
+                        if err_path.exists():
+                            err_path.unlink()
+
+                        ph = img_meta.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({
+                            "phase": "compose_from_refs",
+                            "references": ref_paths[:4],
+                            "layout_hint": layout_hint,
+                        })
+                        img_meta["prompt_history"] = ph
+                        img_meta["status"] = "ok"
+                        img_meta["attempts"] = int(img_meta.get("attempts") or 0) + 1
+                        img_meta["last_error"] = None
+                        img_meta["path"] = str(ok_path)
+                        img_meta["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                        s["image"] = img_meta
+                    except Exception as e:
+                        # compose mode에서는 외부 이미지 API fallback을 호출하지 않는다.
+                        err_msg = f"COMPOSE_CLIP_ERROR: {e}"
+                        try:
+                            err_path.parent.mkdir(parents=True, exist_ok=True)
+                            err_path.write_bytes(make_error_image_bytes(err_msg))
+                        except Exception:
+                            pass
+                        ph = img_meta.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({
+                            "phase": "compose_from_refs",
+                            "error": f"compose_failed_no_api_fallback: {e}",
+                        })
+                        img_meta["prompt_history"] = ph
+                        img_meta["status"] = "error"
+                        img_meta["attempts"] = int(img_meta.get("attempts") or 0) + 1
+                        img_meta["last_error"] = err_msg
+                        img_meta["path"] = str(err_path)
+                        img_meta["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                        s["image"] = img_meta
+                    dt = time.time() - t0
+                    s_gen_time_sum += dt
+                    s_gen_count += 1
+                else:
+                    t0 = time.time()
+                    s["image"] = generate_with_fallback(
+                        client=self.img_client,
+                        out_ok_path=ok_path,
+                        out_error_path=err_path,
+                        prompt=prompt,
+                        retry=retry,
+                        meta=img_meta,
+                        aspect_ratio="16:9",
+                        reference_image_paths=ref_paths,
+                    )
+                    dt = time.time() - t0
+                    s_gen_time_sum += dt
+                    s_gen_count += 1
 
                 meta_after = s.get("image") if isinstance(s.get("image"), dict) else img_meta
                 status = str(meta_after.get("status") or "")
@@ -2490,6 +3092,19 @@ class Orchestrator:
 
                 # policy rewrite flow (interactive)
                 if status != "ok" and self._is_policy_error(last_err2):
+                    if clip_llm_disabled:
+                        ph = meta_after.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({
+                            "phase": "policy_rewrite_llm",
+                            "skipped": True,
+                            "reason": "clip_llm_disabled",
+                        })
+                        meta_after["prompt_history"] = ph
+                        s["image"] = meta_after
+                        self.db.save(project)
+                        continue
                     if self._confirm(
                         "정책 위반으로 막힌 것 같습니다. 우회 프롬프트를 LLM으로 재작성 후 재시도할까요?",
                         f"- scene={sid}\n- place={place_name}\n- chars={', '.join(char_names)}\n- error={last_err2}\n- file={err_path.name}"
@@ -2557,6 +3172,19 @@ class Orchestrator:
                     and had_err_file
                     and err_path.exists()
                 ):
+                    if clip_llm_disabled:
+                        ph = meta_after2.get("prompt_history")
+                        if not isinstance(ph, list):
+                            ph = []
+                        ph.append({
+                            "phase": "regen_prompt_llm",
+                            "skipped": True,
+                            "reason": "clip_llm_disabled",
+                        })
+                        meta_after2["prompt_history"] = ph
+                        s["image"] = meta_after2
+                        self.db.save(project)
+                        continue
                     if self._confirm(
                         "이미지 생성이 계속 실패합니다. LLM으로 clip 프롬프트를 재생성해서 다시 시도할까요?",
                         f"- scene={sid}\n- place={place_name}\n- chars={', '.join(char_names)}\n- error={last_err3}\n- file={err_path.name}"
@@ -2614,8 +3242,16 @@ class Orchestrator:
                 f"[6/7] clips done in {self._fmt_eta(time.time()-s_t0)}: total={s_total} "
                 f"skip={s_skip} ok={s_ok} err={s_err} regen={s_regen} prompt_err={s_prompt_err}"
             )
+            try:
+                _audit_clip_character_alignment()
+            except UnboundLocalError:
+                pass
         else:
             print("[6/7] clips: SKIP (already complete)")
+            # clips 스킵 경로에서는 로컬 함수 스코프 상태에 따라 감사 함수가 없을 수 있다.
+            # 이 경우 export를 막지 않도록 audit은 건너뛴다.
+            if "clip_character_audit" not in (project.get("project", {}) or {}):
+                pass
 
         if self.cfg.stop_after_clips:
             project.setdefault("project", {})
@@ -2623,6 +3259,14 @@ class Orchestrator:
             project["project"]["phase_detail"] = "through_clips"
             self.db.save(project)
             print("[6.5/7] stop_after_clips: stop after clip generation before export")
+            return project
+
+        if self.cfg.stop_after_clip_prompts:
+            project.setdefault("project", {})
+            project["project"]["phase"] = "clip_prompts_ready"
+            project["project"]["phase_detail"] = "through_clip_prompts"
+            self.db.save(project)
+            print("[6.4/7] stop_after_clip_prompts: stop after clip prompt preparation before image generation")
             return project
 
         # ------------------------------------------------------------

@@ -33,7 +33,12 @@ class LLMPromptRewriter:
 
     def __init__(self, cfg: LLMPromptRewriteConfig | None = None) -> None:
         self.cfg = cfg or LLMPromptRewriteConfig()
-        self.client = genai.Client()
+        self.client: genai.Client | None = None
+
+    def _get_client(self) -> genai.Client:
+        if self.client is None:
+            self.client = genai.Client()
+        return self.client
 
     def rewrite(self, original_prompt: str, error_message: str) -> Dict[str, Any]:
         op = (original_prompt or "").strip()
@@ -62,7 +67,7 @@ class LLMPromptRewriter:
         user_text = instruction + "\n[INPUT_JSON]\n" + json.dumps(payload, ensure_ascii=False)
 
         resp = call_with_timeout(
-            lambda: self.client.models.generate_content(
+            lambda: self._get_client().models.generate_content(
                 model=self.cfg.model,
                 contents=[user_text],
                 config=types.GenerateContentConfig(

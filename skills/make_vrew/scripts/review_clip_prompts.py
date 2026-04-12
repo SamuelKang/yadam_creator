@@ -39,11 +39,51 @@ def _find_issues(scene: Dict[str, Any], prompt: str) -> List[str]:
     if re.search(r"[\"“][^\"”\n]{1,260}[\"”]", ptxt):
         issues.append("quoted_dialogue")
     # Treat true speaker-name dialogue as suspicious, but allow structural labels.
-    structural_labels = {"character", "characters", "setting", "style", "mood", "lighting", "identity", "shot"}
+    structural_labels = {
+        "character",
+        "characters",
+        "setting",
+        "style",
+        "mood",
+        "lighting",
+        "identity",
+        "shot",
+        "camera",
+        "action",
+        "visible",
+        "primary",
+        "subjects",
+        "main",
+        "negative",
+        "continuity",
+        "lock",
+        "maintain",
+        "emotion",
+        "wardrobe",
+        "props",
+    }
+    allowed_prefixes = (
+        "visible action:",
+        "primary subjects:",
+        "main character:",
+        "setting continuity lock:",
+        "camera:",
+        "shot:",
+        "style:",
+        "mood:",
+        "negative:",
+        "lighting:",
+    )
     has_name_colon_dialogue = False
     for m in re.finditer(r"(?:^|\s)([가-힣A-Za-z]{1,16})\s*[:：]\s*[^.\n]{1,180}", ptxt):
         label = str(m.group(1) or "").strip().lower()
+        span_txt = str(m.group(0) or "").strip().lower()
         if label in structural_labels:
+            continue
+        if any(span_txt.startswith(p) for p in allowed_prefixes):
+            continue
+        # Heuristic: only flag likely speaker labels, not generic lowercase tags.
+        if re.fullmatch(r"[a-z]{1,16}", label):
             continue
         has_name_colon_dialogue = True
         break
@@ -53,7 +93,8 @@ def _find_issues(scene: Dict[str, Any], prompt: str) -> List[str]:
         issues.append("speech_or_caption_term")
     if re.search(r"\b(?:visible text|letters|words on screen|text overlay|quote marks)\b", ptxt, re.IGNORECASE):
         issues.append("visible_text_term")
-    if len(ptxt) > 520:
+    # Flow prompts can be longer due to explicit style/negative constraints.
+    if len(ptxt) > 760:
         issues.append("too_long")
     places = scene.get("places")
     if not isinstance(places, list) or not places:

@@ -15,6 +15,7 @@ python skills/make_vrew/scripts/review_clip_prompts.py --story-id <story-id>
 ## Goal
 
 Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that tend to create text, speech bubbles, dialogue-heavy images, or blank/white-background clips.
+For browser-Flow runs, also review `scenes[].image.prompt_used` as the final generation prompt.
 
 ## Review Priorities
 
@@ -48,6 +49,22 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
    - burning-evidence beats must visibly include flame/smoke
 12. Block emotion-acting omissions:
    - when scene text carries fear/rage/grief/panic/relief beats, prompt must include readable facial expression and body gesture cues
+13. For Google Flow `image.prompt_used`, enforce ordered video-prompt structure:
+   - shot/camera
+   - main subject(s)
+   - visible action
+   - environment
+   - time/lighting/weather
+   - wardrobe/prop continuity
+   - style/mood
+   - negative constraints
+14. For Flow prompts, block templated filler language and require scene-text-grounded action:
+   - block repeated generic templates that can apply to any scene
+   - require at least one concrete visible action drawn from `scene.text`
+15. Enforce prompt size target for Flow:
+   - target 70-140 words per `image.prompt_used`
+   - too short: under-specified, drift-prone
+   - too long: diluted focus, unstable generation
 
 ## Rewrite Rules
 
@@ -82,6 +99,40 @@ Codex should review `scenes[].llm_clip_prompt` and remove prompt shapes that ten
 - For `짚신` scenes, explicitly anchor traditional woven straw sandals and avoid modern sole/strap wording.
 - Do not add modern objects, neon signage, printed lettering, or UI-like overlays.
 - If the existing prompt is already clean and concise, leave it unchanged.
+
+## Flow-Specific Quality Checks (`image.prompt_used`)
+
+Before browser Flow generation, verify:
+
+1. Grounding and tagging
+   - `scenes[].characters` only includes people explicitly present in `scene.text`
+   - `scenes[].places` matches direct scene cues (house/courtyard/magistrate/mountain/gorge)
+   - no background contamination (e.g., house scene drifting to magistrate compound)
+2. Shot-person consistency
+   - no two-shot wording when only one person is present
+   - no `exactly one` wording when scene text clearly has multiple people
+3. Action specificity
+   - replace abstract emotion labels with drawable movement/blocking
+   - avoid static portrait phrasing in dynamic scenes
+4. Continuity locks
+   - if needed by scene, restate recurring anchors (same sickle shape, same outfit state, same hidden relic)
+5. Style discipline
+   - keep style layer shorter than scene action/environment content
+   - keep Joseon-era Korean context explicit; avoid Japanese/Chinese costume drift
+6. Negative constraints
+   - include compact negatives only (no text/subtitles, no modern objects, no JP/CN costume drift, coherent anatomy)
+
+Quick local checks (example):
+
+```bash
+python - <<'PY'
+import json
+d=json.load(open('work/<story-id>/out/project.json'))
+ws=[len((s.get('image',{}).get('prompt_used','')).split()) for s in d['scenes']]
+print('min',min(ws),'max',max(ws),'avg',round(sum(ws)/len(ws),1))
+print('lt70',sum(w<70 for w in ws),'gt140',sum(w>140 for w in ws))
+PY
+```
 
 ## Good Direction
 

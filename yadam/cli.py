@@ -44,6 +44,7 @@ class _TeeWriter(io.TextIOBase):
 
 
 _RUN_LOG_STREAM: io.TextIOBase | None = None
+DISALLOWED_TEXT_LLM_MODELS = {"gemini-3-flash-preview"}
 
 
 def _enable_run_log(work_dir: Path, story_id: str) -> Path:
@@ -67,7 +68,10 @@ def _enable_run_log(work_dir: Path, story_id: str) -> Path:
 
 
 def _resolve_llm_model(raw: str = "") -> str:
-    return (raw or "").strip() or DEFAULT_TEXT_LLM_MODEL
+    model = (raw or "").strip() or DEFAULT_TEXT_LLM_MODEL
+    if model in DISALLOWED_TEXT_LLM_MODELS:
+        return DEFAULT_TEXT_LLM_MODEL
+    return model
 
 
 def _confirm_clean_workdir(target: Path) -> bool:
@@ -558,6 +562,11 @@ def main() -> None:
         help="대본 정규화, scene 분할, seed 추출, tag_scene까지만 수행하고 중단",
     )
     ap.add_argument(
+        "--allow-remote-llm-extract",
+        action="store_true",
+        help="기본 Codex 수동 구조 병합 정책을 해제하고 [2/7] remote LLM extract를 허용",
+    )
+    ap.add_argument(
         "--through-place-refs",
         action="store_true",
         help="캐릭터/장소 레퍼런스 이미지(7/8단계)까지만 수행하고 clip/export 전에 중단",
@@ -566,6 +575,27 @@ def main() -> None:
         "--through-clips",
         action="store_true",
         help="clip 이미지 생성(9단계)까지만 수행하고 export 전에 중단",
+    )
+    ap.add_argument(
+        "--through-clip-prompts",
+        action="store_true",
+        help="clip 프롬프트만 준비하고 이미지 생성 전에 중단",
+    )
+    ap.add_argument(
+        "--compose-clips-from-refs",
+        action="store_true",
+        help="clip 단계에서 API 생성 대신 기존 character/place 이미지를 합성해 저비용으로 완료",
+    )
+    ap.add_argument(
+        "--browser-image-mode",
+        choices=["none", "gemini", "flow"],
+        default="none",
+        help="브라우저 수동 생성 준비 모드. gemini/flow 선택 시 character/place 레퍼런스 생성을 건너뛴다",
+    )
+    ap.add_argument(
+        "--export-character-cutouts",
+        action="store_true",
+        help="기존 캐릭터 이미지에서 흰 배경 제거 알파 PNG 컷아웃을 생성",
     )
     ap.add_argument(
         "--vrew-clip-max-chars",
@@ -641,7 +671,12 @@ def main() -> None:
         raise ValueError(f"invalid story-id: {story_id}")
 
     _enable_run_log(work_dir, story_id)
-    prefer_existing_inputs = bool(args.through_tag_scene or args.through_place_refs or args.through_clips)
+    prefer_existing_inputs = bool(
+        args.through_tag_scene
+        or args.through_place_refs
+        or args.through_clips
+        or args.through_clip_prompts
+    )
 
     if args.make_synopsis or args.make_sysnopsis:
         print(f"[INFO] step 1/1: generating synopsis for {story_id}")
@@ -956,6 +991,9 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
     from yadam.gen.gemini_client import VertexImagenClient, GeminiFlashImageClient
     from yadam.gen.comfy_client import ComfyUIImageClient
 
+    requested_llm_model = (args.llm_model or "").strip()
+    resolved_llm_model = _resolve_llm_model(requested_llm_model)
+
     cfg = PipelineConfig(
         base_dir=str(base_dir),
         profiles_yaml=str(root / args.profiles),
@@ -964,14 +1002,43 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
         input_script_path=str(script_path),
         json_name="project.json",
         interactive=(not args.non_interactive),
-        llm_model=_resolve_llm_model(args.llm_model),
+        llm_model=resolved_llm_model,
+        allow_remote_llm_extract=bool(args.allow_remote_llm_extract),
         stop_after_tag_scene=bool(args.through_tag_scene),
         stop_after_place_refs=bool(args.through_place_refs),
         stop_after_clips=bool(args.through_clips),
+        stop_after_clip_prompts=bool(args.through_clip_prompts),
+        compose_clips_from_refs=bool(args.compose_clips_from_refs),
+        export_character_cutouts=bool(args.export_character_cutouts),
+        skip_reference_generation=bool(args.browser_image_mode in ("gemini", "flow")),
+        browser_image_mode=str(args.browser_image_mode),
         vrew_clip_max_chars=max(1, int(args.vrew_clip_max_chars)),
     )
 
-    if args.image_api == "vertex_imagen":
+    if cfg.skip_reference_generation and not (
+        cfg.stop_after_tag_scene
+        or cfg.stop_after_place_refs
+        or cfg.stop_after_clip_prompts
+        or cfg.stop_after_clips
+    ):
+        cfg.stop_after_clip_prompts = True
+        print(
+            f"[INFO] browser_image_mode={cfg.browser_image_mode}: "
+            "forcing --through-clip-prompts behavior (prepare-only)."
+        )
+
+    if cfg.skip_reference_generation and (cfg.stop_after_place_refs or cfg.stop_after_clip_prompts):
+        from yadam.core.errors import GenError, ErrorKind
+        from yadam.gen.image_client import ImageClient, ImageGenRequest, ImageGenResponse
+
+        class _PrepareOnlyImageClient(ImageClient):
+            def generate(self, req: ImageGenRequest) -> ImageGenResponse:
+                raise GenError(ErrorKind.FATAL, "PREPARE_ONLY_MODE", "browser prepare-only 모드에서는 이미지 생성 API를 호출하지 않습니다.")
+
+        model = args.image_model.strip() or "prepare_only"
+        img_client = _PrepareOnlyImageClient()
+        workflow_path = ""
+    elif args.image_api == "vertex_imagen":
         model = args.image_model.strip() or DEFAULT_VERTEX_IMAGE_MODEL
         img_client = VertexImagenClient(model=model)
         workflow_path = ""
@@ -1006,9 +1073,20 @@ def _run_full_pipeline_mode(root: Path, story_id: str, args: argparse.Namespace)
 
     print(f"[INFO] starting image and .vrew pipeline for {story_id}")
     print(f"[INFO] llm_model={cfg.llm_model}")
+    if requested_llm_model and requested_llm_model != resolved_llm_model:
+        print(
+            f"[WARN] requested disallowed text LLM '{requested_llm_model}', "
+            f"fallback to '{resolved_llm_model}'"
+        )
+    print(f"[INFO] allow_remote_llm_extract={cfg.allow_remote_llm_extract}")
     print(f"[INFO] through_tag_scene={cfg.stop_after_tag_scene}")
     print(f"[INFO] through_place_refs={cfg.stop_after_place_refs}")
+    print(f"[INFO] through_clip_prompts={cfg.stop_after_clip_prompts}")
     print(f"[INFO] through_clips={cfg.stop_after_clips}")
+    print(f"[INFO] compose_clips_from_refs={cfg.compose_clips_from_refs}")
+    print(f"[INFO] browser_image_mode={cfg.browser_image_mode}")
+    print(f"[INFO] skip_reference_generation={cfg.skip_reference_generation}")
+    print(f"[INFO] export_character_cutouts={cfg.export_character_cutouts}")
     print(f"[INFO] image_api={args.image_api}, image_model={model}, image_client={img_client.__class__.__name__}")
     if args.image_api == "gemini_flash_image" and 'remapped_from' in locals() and remapped_from:
         print(f"[WARN] requested unsupported Gemini image model '{remapped_from}', fallback to '{model}'")
