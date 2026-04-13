@@ -78,6 +78,12 @@ For browser-Flow runs, also review `scenes[].image.prompt_used` as the final gen
 19. Detect and block character-appearance continuity drift:
    - Shim should keep the gaunt-face anchor unless script explicitly changes her physical condition
    - adjacent same-beat scenes should not drop Shim's key outfit/bandage state without transition cues
+20. Detect and block replacement-artifact corruption:
+   - broken fragments like `붙잡고 라며`, `을 떼고 을`
+   - duplicated replacement artifacts like `the matriarch the matriarch`
+21. In final-stage QC, prefer minimal-surgery edits:
+   - keep already-good scenes untouched
+   - patch only flagged scenes and immediate continuity neighbors
 
 ## Rewrite Rules
 
@@ -112,6 +118,7 @@ For browser-Flow runs, also review `scenes[].image.prompt_used` as the final gen
 - For `짚신` scenes, explicitly anchor traditional woven straw sandals and avoid modern sole/strap wording.
 - Do not add modern objects, neon signage, printed lettering, or UI-like overlays.
 - If the existing prompt is already clean and concise, leave it unchanged.
+- In final pass, do not run broad stylistic rewrites that can reintroduce generic fallback text.
 
 ## Flow-Specific Quality Checks (`image.prompt_used`)
 

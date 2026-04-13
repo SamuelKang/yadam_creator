@@ -25,6 +25,10 @@ Additionally for role/place/wardrobe-prop drift:
 6. Lock location continuity across adjacent climax scenes
 7. Lock wardrobe/prop constraints (female-gat prohibition, pregnancy-vs-baby consistency)
 
+8. In late-stage QC, preserve already-good scenes and repair only flagged/high-risk scenes.
+9. If patched scene text is rewritten, keep `llm_clip_prompt`, `image.prompt_used`, and `image.prompt_original` semantically aligned.
+10. After any character/place reassignment, recompute `used_by_scenes` for both `characters[]` and `places[]`.
+
 ## Place Repair Rules
 
 - Choose from existing canonical `places[]` only.
@@ -84,6 +88,27 @@ Additionally for role/place/wardrobe-prop drift:
   - if scene beat is pregnancy, explicitly block baby-in-arms depiction (`No baby in arms...`)
   - if ledger/evidence ownership matters, explicitly lock holder (`Ledger is held only by Shim...`)
   - if confrontation depends on protection, explicitly lock blocking stance (`Shim stands in front to shield Yeonhwa...`)
+  - remove malformed replacement fragments before generation (examples: `붙잡고 라며`, `을 떼고 을`)
+
+## Final pass: minimal-surgery checklist
+
+Use this checklist right before Flow generation:
+
+1. Cast precision
+   - remove non-participating characters from `scene.characters`
+   - ensure scene center actor matches `scene.text`
+2. Place precision
+   - correct indoor/outdoor/threshold family mismatch
+   - avoid broad exterior fallback when scene beat is room/doorstep specific
+3. Action precision
+   - `Visible action` must describe 1-2 drawable events
+   - replace mood-only sentences as action
+4. Prompt hygiene
+   - no broken substitution artifacts
+   - no generic fallback boilerplate reintroduced
+5. Field sync + structure gate
+   - sync prompt fields (`llm_clip_prompt`, `prompt_used`, `prompt_original`)
+   - run `check_structure_ready.py` and proceed only on pass
 
 ## Targeted Lock Clauses (copy/paste)
 

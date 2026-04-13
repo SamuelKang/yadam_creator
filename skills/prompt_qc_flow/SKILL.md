@@ -74,6 +74,46 @@ python skills/prompt_qc_flow/scripts/scan_role_place_prop_drift.py --story-id <s
 
 7. Re-run style/gate/review/drift scan and role audit until all pass.
 
+## Final-Tuning Mode (recommended before Flow generation)
+
+When the project is already mostly stabilized, switch from "global rewrite" to "surgical repair":
+
+1. Preserve good scenes
+   - do not bulk-rewrite stable early/mid scenes
+   - patch only explicitly flagged scenes and nearby continuity-dependent scenes
+2. Fix only high-impact defects first
+   - wrong `scene.characters` membership (extra/missing core actor)
+   - wrong `scene.places` family (indoor/outdoor threshold mismatch)
+   - malformed/truncated prompt text (broken substitution artifacts)
+   - generic action placeholders that removed scene event meaning
+3. Keep prompt fields aligned per patched scene
+   - `llm_clip_prompt`
+   - `image.prompt_used`
+   - `image.prompt_original` (mirror final repaired wording for consistency)
+4. Recompute metadata consistency after edits
+   - `characters[].used_by_scenes`
+   - `places[].used_by_scenes`
+5. Run structure gate before leaving QC
+```bash
+python skills/make_vrew/scripts/check_structure_ready.py --story-id <story-id>
+```
+
+### Defect patterns to block (from latest production tuning)
+
+- extra cast in frame despite `scene.text` not mentioning them
+- broad exterior fallback for clearly indoor/threshold scenes
+- role-weight drift (supporting character stealing the scene center)
+- broken replacement artifacts in Korean text fragments, e.g.:
+  - `...붙잡고 라며...`
+  - `...을 떼고 을...`
+- mood-only sentence used as `Visible action` (no drawable event)
+
+### Minimal-surgery decision rule
+
+- If a scene is already semantically correct and visually specific, leave it unchanged.
+- If a scene fails in one dimension only (cast/place/action wording), edit that dimension only.
+- Avoid "full-pass stylistic rewrites" in late stage, because they often reintroduce generic templates.
+
 ## Generalized guardrails (cross-story contamination prevention)
 
 The skill now also audits and repairs these high-risk patterns:
